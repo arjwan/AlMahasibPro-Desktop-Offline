@@ -1,0 +1,45 @@
+{
+  "name": "al-mahasibpro-desktop-offline",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "desktop": "electron .",
+    "build:win": "npm test && electron-builder --win nsis --x64 --publish never"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "electron-main.cjs",
+  "devDependencies": {
+    "electron": "^41.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "iq.alarjwan.almahasib.desktop",
+    "productName": "AlMahasibPro Offline",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron-main.cjs",
+      "server.mjs",
+      "index.html",
+      "package.json"
+    ],
+    "asar": false,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "artifactName": "AlMahasibPro-Offline-Setup-${version}-${arch}.${ext}"
+  }
+}
