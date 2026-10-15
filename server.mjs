@@ -62,17 +62,24 @@ function migrate(){
         db.exec('PRAGMA user_version=1');
     }
     
-    if(currentVersion<2 || !db.prepare('PRAGMA table_info(products)').all().some(c=>c.name==='cost')){
-        log('Migrating to v2 (Adding missing columns/indexes)');
-        // Ensure cost exists in products if old DB was used
-        const cols=db.prepare('PRAGMA table_info(products)').all();
-        if(!cols.find(c=>c.name==='cost')){
-            db.exec('ALTER TABLE products ADD COLUMN cost INTEGER NOT NULL DEFAULT 0 CHECK(cost>=0)');
-        }
-        db.exec('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
-        db.exec('PRAGMA user_version=2');
+    // Legacy databases may advertise v2 while still missing columns.
+    // Reconcile column-by-column before creating dependent indexes.
+    const columns=table=>new Set(db.prepare('PRAGMA table_info('+table+')').all().map(c=>c.name));
+    const productColumns=columns('products');
+    for(const [column,definition] of [
+      ['barcode','TEXT'],['unit_id','TEXT'],['category','TEXT'],
+      ['cost','INTEGER NOT NULL DEFAULT 0'],['price','INTEGER NOT NULL DEFAULT 0'],
+      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT']
+    ]){
+      if(!productColumns.has(column)){
+        log('Adding missing products column: '+column);
+        db.exec('ALTER TABLE products ADD COLUMN '+column+' '+definition);
+      }
     }
+    const journalColumns=columns('journal_items');
+    if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
+    if(currentVersion<2)db.exec('PRAGMA user_version=2');
 }
 migrate();
 
