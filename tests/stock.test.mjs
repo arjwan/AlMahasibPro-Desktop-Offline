@@ -42,6 +42,8 @@ test('Stock: preliminary documents, revision, atomic approval, shared carton uni
  assert.equal((await f.request('/api/products')).data[0].stock,before);assert.equal((await f.request('/api/stock/batches')).data[0].qty,before);
  const report=(await f.request('/api/reports/financial')).data;assert.equal(report.debit,report.credit);
  await f.stop();await f.start();await f.login();assert.equal((await f.request('/api/stock/batches')).data[0].qty,12);
+ // A legacy opening balance may precede all recorded movements.
+ await f.stop();const legacy=new DatabaseSync(f.dbPath);legacy.prepare("UPDATE product_warehouse SET stock=stock+7 WHERE product_id='S'").run();legacy.prepare("UPDATE stock_batches SET qty=qty+7 WHERE product_id='S' AND lot='B1'").run();legacy.close();await f.start();await f.login();const legacyCard=(await f.request('/api/stock/card?product_id=S')).data;assert.equal(legacyCard[0].type,'opening');assert.equal(legacyCard[0].balance,7);assert.equal(legacyCard.at(-1).balance,19);
  }finally{await f.cleanup()}
 });
 
