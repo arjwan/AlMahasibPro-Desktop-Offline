@@ -18,10 +18,15 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
  CREATE TABLE IF NOT EXISTS asset_depreciation(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL REFERENCES fixed_assets(id), month TEXT NOT NULL, amount INTEGER NOT NULL, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), UNIQUE(asset_id,month));
  CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), year INTEGER NOT NULL, amount INTEGER NOT NULL CHECK(amount>=0), UNIQUE(account_id,year));
  CREATE TABLE IF NOT EXISTS bank_reconciliations(id INTEGER PRIMARY KEY, date TEXT NOT NULL, account_id TEXT NOT NULL REFERENCES accounts(id), book_balance INTEGER NOT NULL, statement_balance INTEGER NOT NULL, difference INTEGER NOT NULL, description TEXT);
+ CREATE TABLE IF NOT EXISTS purchase_drafts(id INTEGER PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, posted_invoice_id INTEGER REFERENCES purchase_invoices(id));
  CREATE TABLE IF NOT EXISTS request_keys(key TEXT PRIMARY KEY, route TEXT NOT NULL, payload TEXT NOT NULL, result TEXT NOT NULL);
  `);
  function column(table,name,type){if(!db.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name===name)){db.exec('ALTER TABLE '+table+' ADD COLUMN '+name+' '+type);return true}return false}
  column('purchase_invoices','warehouse_id','INTEGER NOT NULL DEFAULT 1');if(column('purchase_invoices','paid','INTEGER NOT NULL DEFAULT 0'))db.exec("UPDATE purchase_invoices SET paid=COALESCE((SELECT SUM(i.credit) FROM journal_items i JOIN journal_entries e ON e.id=i.entry_id WHERE e.reference=purchase_invoices.invoice_no AND i.account_id='101'),CASE WHEN payment_status='paid' THEN net ELSE 0 END)");
+ column('purchase_invoices','supplier_invoice_no','TEXT');
+ column('purchase_invoices','invoice_time',"TEXT NOT NULL DEFAULT '00:00'");
+ db.exec(`UPDATE purchase_invoices SET supplier_invoice_no=invoice_no WHERE supplier_invoice_no IS NULL;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_supplier_number ON purchase_invoices(partner_id,supplier_invoice_no);`);
  column('stock_reservations','invoice_id','INTEGER');
  column('sale_invoices','source',"TEXT NOT NULL DEFAULT 'pos'");column('sale_invoices','workflow',"TEXT NOT NULL DEFAULT 'loaded'");
  column('sale_invoices','cancelled','INTEGER NOT NULL DEFAULT 0');column('sale_invoices','paid','INTEGER');column('sale_invoices','agent_id','INTEGER');column('sale_invoices','branch_id','INTEGER');

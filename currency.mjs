@@ -16,7 +16,7 @@ export function currencyERP({db,inputError,transaction,postJournal,erp,send,read
   if(!Array.isArray(v.lines))inputError('مواد الفاتورة مطلوبة');
   let prefix=0;
   const lines=v.lines.map(line=>{const qty=positive(line.qty,'الكمية',1),key=kind==='sale'?'price':'cost',cents=decimal(line[key],2,'السعر بالدولار'),total=positive(qty*cents,'قيمة السطر بالدولار'),next=positive(prefix+total,'مجموع الفاتورة بالدولار'),base=convert(next,exchange)-convert(prefix,exchange);prefix=next;return {...line,[key]:convert(cents,exchange),__base_total:base}});
-  const discountCents=kind==='sale'?decimal(v.discount||0,2,'الخصم بالدولار'):0;if(discountCents>prefix)inputError('الخصم أكبر من قيمة الفاتورة');
+  const discountCents=decimal(v.discount||0,2,'الخصم بالدولار');if(discountCents>prefix)inputError('الخصم أكبر من قيمة الفاتورة');
   const discount=convert(prefix,exchange)-convert(prefix-discountCents,exchange);
   // Payment is explicitly entered in IQD. Physical USD settlement uses the FX voucher endpoint.
   return {...v,lines,discount,__fx:{currency:'USD',rate:exchange,snapshot:JSON.stringify(original)}};

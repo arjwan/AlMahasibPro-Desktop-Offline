@@ -247,14 +247,19 @@ const handler=(req,res)=>{
  return send(res,201,{id,name,type});
  }
  if(req.method==='GET'&&p==='/api/purchases')return send(res,200,db.prepare('SELECT p.*,v.name AS supplier FROM purchase_invoices p LEFT JOIN partners v ON v.id=p.partner_id ORDER BY p.id DESC LIMIT 200').all());
+ if(req.method==='GET'&&p==='/api/purchases/drafts')return send(res,200,db.prepare('SELECT * FROM purchase_drafts WHERE posted_invoice_id IS NULL ORDER BY id DESC').all().map(x=>({...x,payload:JSON.parse(x.payload)})));
  if(req.method==='POST'&&p==='/api/purchases'){
- erp.periodOpen();
- const v=currency.normalize(readJSON(body),'purchase'),lines=v.lines,partnerId=String(v.partner_id||''),warehouseId=Number(v.warehouse_id||1),paid=Number(v.paid||0);
+ const original=readJSON(body),v=currency.normalize(original,'purchase'),lines=v.lines,partnerId=String(v.partner_id||''),warehouseId=Number(v.warehouse_id||1),paid=Number(v.paid||0);
+ const local=new Date().toLocaleString('sv-SE',{timeZone:'Asia/Baghdad'}),date=String(v.date||local.slice(0,10)),invoiceTime=String(v.time||local.slice(11,16)),supplierNumber=String(v.supplier_invoice_no??v.invoice_no??'').normalize('NFKC').trim();
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date))||new Date(date).toISOString().slice(0,10)!==date||!/^([01]\d|2[0-3]):[0-5]\d$/.test(invoiceTime)||supplierNumber.length>100)inputError('رقم الفاتورة أو التاريخ أو الوقت غير صحيح');
  if(!Array.isArray(lines)||!lines.length||!Number.isSafeInteger(warehouseId)||warehouseId<=0||!Number.isSafeInteger(paid)||paid<0)inputError('بيانات فاتورة الشراء غير صحيحة');
  const result=transaction(()=>{
+ const draft=v.draft_id?db.prepare('SELECT * FROM purchase_drafts WHERE id=?').get(Number(v.draft_id)):null;
+ if(v.draft_id&&(!draft||draft.posted_invoice_id||Number(v.expected_revision)!==draft.revision))inputError('الفاتورة الأولية تغيرت أو اعتُمدت؛ أعد فتحها');
  const party=db.prepare('SELECT * FROM partners WHERE id=?').get(partnerId);
  if(!party||!['supplier','both'].includes(party.type))inputError('اختر مورداً صحيحاً');
  if(!db.prepare('SELECT id FROM warehouses WHERE id=?').get(warehouseId))inputError('المخزن غير موجود');
+ if(supplierNumber&&db.prepare('SELECT id FROM purchase_invoices WHERE partner_id=? AND supplier_invoice_no=?').get(partnerId,supplierNumber))inputError('فاتورة المورد بهذا الرقم معتمدة سابقاً');
  let net=0;const items=[];
  for(const line of lines){
  const product=db.prepare('SELECT * FROM products WHERE id=?').get(String(line.product_id||''));
@@ -263,24 +268,37 @@ const handler=(req,res)=>{
  const total=line.__base_total??qty*cost;if(!Number.isSafeInteger(total)||!Number.isSafeInteger(net+total))inputError('مبلغ الفاتورة كبير جداً');
  net+=total;items.push({product,qty,cost,total});
  }
+ const subtotal=net,discount=Number(v.discount||0);if(!Number.isSafeInteger(discount)||discount<0||discount>subtotal)inputError('الخصم غير صحيح');net=subtotal-discount;
+ let prefix=0;for(const item of items){const next=prefix+item.total;item.total=subtotal?Number(BigInt(next)*BigInt(net)/BigInt(subtotal)-BigInt(prefix)*BigInt(net)/BigInt(subtotal)):0;prefix=next}
  if(paid>net)inputError('المدفوع أكبر من قيمة الفاتورة');
- const now=new Date().toISOString(),date=now.slice(0,10);
- const result=db.prepare('INSERT INTO purchase_invoices(invoice_no,partner_id,date,subtotal,discount,net,payment_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,partnerId,date,net,0,net,paid===net?'paid':paid?'partial':'unpaid',now);
+ const now=new Date().toISOString();
+ if(v.status==='draft'){
+  const payload=JSON.stringify({...original,date,time:invoiceTime,supplier_invoice_no:supplierNumber});
+  if(draft){db.prepare('UPDATE purchase_drafts SET payload=?,revision=revision+1,updated_at=? WHERE id=?').run(payload,now,draft.id);erp.audit('purchase-draft-updated',draft.id);return {draft_id:draft.id,revision:draft.revision+1,status:'draft'}}
+  const id=Number(db.prepare('INSERT INTO purchase_drafts(payload,created_at,updated_at) VALUES(?,?,?)').run(payload,now,now).lastInsertRowid);erp.audit('purchase-draft-created',id);return {draft_id:id,revision:1,status:'draft'};
+ }
+ if(v.status&&v.status!=='posted')inputError('حالة فاتورة الشراء غير صحيحة');
+ erp.periodOpen(date);
+ const result=db.prepare('INSERT INTO purchase_invoices(invoice_no,partner_id,date,subtotal,discount,net,payment_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,partnerId,date,subtotal,discount,net,paid===net?'paid':paid?'partial':'unpaid',now);
  const id=Number(result.lastInsertRowid),invoiceNo='P-'+String(id).padStart(6,'0');
+ let external=supplierNumber||invoiceNo,suffix=1;while(!supplierNumber&&db.prepare('SELECT id FROM purchase_invoices WHERE partner_id=? AND supplier_invoice_no=?').get(partnerId,external))external=invoiceNo+'-'+suffix++;
+ db.prepare('UPDATE purchase_invoices SET supplier_invoice_no=?,invoice_time=? WHERE id=?').run(external,invoiceTime,id);
  db.prepare('UPDATE purchase_invoices SET invoice_no=? WHERE id=?').run(invoiceNo,id);
  db.prepare('UPDATE purchase_invoices SET warehouse_id=?,paid=? WHERE id=?').run(warehouseId,paid,id);currency.snapshot('purchase_invoices',id,v);
  for(const item of items){
  db.prepare('INSERT INTO purchase_items(invoice_id,product_id,qty,cost,line_total) VALUES(?,?,?,?,?)').run(id,item.product.id,item.qty,item.cost,item.total);
  db.prepare('UPDATE purchase_items SET product_name=? WHERE invoice_id=? AND product_id=?').run(item.product.name,id,item.product.id);
  inventory(item.product.id,warehouseId,item.qty,'purchase',invoiceNo,item.total);
+ db.prepare("UPDATE inventory_moves SET date=? WHERE type='purchase' AND reference=?").run(date,invoiceNo);
  }
  const entry=db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(date,'فاتورة شراء '+invoiceNo,invoiceNo,now);
  const journalId=Number(entry.lastInsertRowid),add=db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)');
  if(net)add.run(journalId,'102',net,0,invoiceNo);
  if(paid)add.run(journalId,'101',0,paid,invoiceNo);
  if(net-paid)add.run(journalId,'201',0,net-paid,invoiceNo);
- erp.audit('purchase-posted',id,{invoiceNo,net,paid});
- return {id,invoice_no:invoiceNo,net,paid};
+ if(draft)db.prepare('UPDATE purchase_drafts SET posted_invoice_id=?,updated_at=? WHERE id=?').run(id,now,draft.id);
+ erp.audit('purchase-posted',id,{invoiceNo,net,paid,draft_id:draft?.id||null});
+ return {id,invoice_no:invoiceNo,supplier_invoice_no:external,date,time:invoiceTime,subtotal,discount,net,paid};
  });
  return send(res,201,result);
  }

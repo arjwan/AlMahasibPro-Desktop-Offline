@@ -188,3 +188,32 @@ test('ERP: legacy journal without reference preserves balances and loads account
  assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
  }finally{await f.cleanup()}
 });
+
+test('Purchases: supplier numbers, editable dates, repeated materials, atomic posting and retry protection',async()=>{
+ const f=await fixture();try{await f.login();const a=await created(f,'/api/partners',{name:'مورد أول',type:'supplier'}),b=await created(f,'/api/partners',{name:'مورد ثان',type:'supplier'});await created(f,'/api/products',{id:'BUY',name:'مادة شراء',barcode:'998811',price:200,cost:0});
+ const payload={partner_id:a.id,supplier_invoice_no:' INV-77 ',date:'2026-01-05',time:'09:35',paid:100,discount:10,lines:[{product_id:'BUY',qty:2,cost:100}]};
+ const first=await created(f,'/api/purchases',payload),detail=(await f.request('/api/purchases/'+first.id)).data;assert.equal(first.supplier_invoice_no,'INV-77');assert.equal(detail.date,'2026-01-05');assert.equal(detail.invoice_time,'09:35');assert.equal((await f.request('/api/stock/moves')).data[0].date,'2026-01-05');assert.equal(detail.subtotal,200);assert.equal(detail.discount,10);assert.equal(detail.net,190);
+ const before=(await f.request('/api/journal')).data.length;
+ assert.equal((await f.request('/api/purchases','POST',payload)).status,400);assert.equal((await f.request('/api/journal')).data.length,before);assert.equal((await f.request('/api/products')).data[0].stock,2);
+ await created(f,'/api/purchases',{...payload,supplier_invoice_no:'INV-78'});await created(f,'/api/purchases',{...payload,partner_id:b.id});
+ assert.equal((await f.request('/api/products')).data[0].stock,6);assert.equal((await f.request('/api/partners/statement?id='+a.id)).data.at(-1).balance,-180);
+ const headers={'Idempotency-Key':'purchase-retry'},auto={partner_id:a.id,paid:0,lines:[{product_id:'BUY',qty:1,cost:100}]};
+ const once=await f.request('/api/purchases','POST',auto,headers),retry=await f.request('/api/purchases','POST',auto,headers);assert.equal(once.status,201);assert.equal(retry.status,200);assert.equal(once.data.id,retry.data.id);
+ const next=await created(f,'/api/purchases',auto);assert.notEqual(next.supplier_invoice_no,once.data.supplier_invoice_no);
+ for(const patch of [{date:'2026-02-30'},{time:'25:00'},{paid:9999},{discount:9999}])assert.equal((await f.request('/api/purchases','POST',{...auto,...patch})).status,400);
+ const period=await created(f,'/api/periods',{name:'مغلقة',start:'2026-01-01',end:'2026-01-31'});await f.request('/api/periods/'+period.id+'/close','POST',{});assert.equal((await f.request('/api/purchases','POST',{...payload,supplier_invoice_no:'BLOCK'})).status,400);
+ const report=(await f.request('/api/reports/financial')).data;assert.equal(report.debit,report.credit);const stock=(await f.request('/api/stock/balances')).data[0];assert.equal(stock.stock,8);assert.equal(stock.value,770);
+ }finally{await f.cleanup()}
+});
+
+test('Purchases: preliminary invoices edit without posting, then approve exactly once',async()=>{
+ const f=await fixture();try{await f.login();await created(f,'/api/products',{id:'DRAFTBUY',name:'مادة أولية',price:10,cost:0});
+ const v={status:'draft',supplier_invoice_no:'DRAFT-1',partner_id:'p1',paid:0,lines:[{product_id:'DRAFTBUY',qty:2,cost:50}]},draft=await created(f,'/api/purchases',v);
+ assert.equal(draft.status,'draft');assert.equal((await f.request('/api/purchases')).data.length,0);assert.equal((await f.request('/api/journal')).data.length,0);assert.equal((await f.request('/api/products')).data[0].stock,0);assert.equal((await f.request('/api/partners/statement?id=p1')).data.length,0);
+ const edited=await created(f,'/api/purchases',{...v,draft_id:draft.draft_id,expected_revision:1,lines:[{product_id:'DRAFTBUY',qty:3,cost:50}]});assert.equal(edited.revision,2);
+ assert.equal((await f.request('/api/purchases','POST',{...v,draft_id:draft.draft_id,expected_revision:1})).status,400);
+ await f.stop();await f.start();await f.login();const saved=(await f.request('/api/purchases/drafts')).data[0];assert.equal(saved.payload.lines[0].qty,3);
+ const approved=await created(f,'/api/purchases',{...saved.payload,status:'posted',draft_id:saved.id,expected_revision:saved.revision});assert.equal(approved.net,150);assert.equal((await f.request('/api/products')).data[0].stock,3);assert.equal((await f.request('/api/journal')).data.length,1);assert.equal((await f.request('/api/purchases/drafts')).data.length,0);
+ assert.equal((await f.request('/api/purchases','POST',{...saved.payload,status:'posted',draft_id:saved.id,expected_revision:saved.revision})).status,400);assert.equal((await f.request('/api/journal')).data.length,1);
+ }finally{await f.cleanup()}
+});
