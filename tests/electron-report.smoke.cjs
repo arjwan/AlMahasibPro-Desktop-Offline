@@ -1,0 +1,8 @@
+// Execute with Electron, in an isolated temporary profile. Never builds an installer.
+const {app,BrowserWindow,dialog}=require('electron');const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict'),net=require('node:net');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'alma-supplier-pdf-'));process.env.ALMAHASIB_USER_DATA=dir;
+(async()=>{const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));process.env.PORT=String(probe.address().port);await new Promise(r=>probe.close(r));const target=path.join(dir,'supplier.pdf');dialog.showSaveDialog=async()=>({canceled:false,filePath:target});require('../electron-main.cjs');await app.whenReady();let main;for(let i=0;i<200;i++){main=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL()===`http://127.0.0.1:${process.env.PORT}/`&&!w.webContents.isLoading());if(main)break;await new Promise(r=>setTimeout(r,100))}assert.ok(main,'Report test window did not load');
+ const result=await main.webContents.executeJavaScript(`(async()=>{const login=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});if(!login.ok)throw Error('Login failed');return window.desktopReports.pdf('id=p1')})()`);
+ assert.equal(result.ok,true);assert.equal(fs.readFileSync(target).subarray(0,4).toString(),'%PDF');console.log('Electron supplier PDF bridge, authorization, rendering and save: PASS');app.quit();
+})().catch(e=>{console.error(e);app.exit(1)});
+app.on('quit',()=>{try{fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200})}catch{}});

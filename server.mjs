@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {supplierReports} from './supplier-reports.mjs';
 import {extendERP} from './erp.mjs';
 import {scannerERP} from './scanner.mjs';
 import {currencyERP} from './currency.mjs';
@@ -190,6 +191,7 @@ const advanced=advancedERP({db,inputError,postJournal,inventory,erp});erp.setAdv
 const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON});
 const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});db.exec('PRAGMA user_version=6');
 const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
+const handleSupplier=supplierReports({db,inputError,send});
 const handler=(req,res)=>{
  let body='';req.on('data',chunk=>{body+=chunk;if(body.length>42e6)req.destroy()});
  req.on('end',()=>{
@@ -207,6 +209,7 @@ const handler=(req,res)=>{
  if(cached){if(cached.route!==route||cached.payload!==payload)inputError('معرف العملية مستخدم لطلب مختلف');return send(res,200,JSON.parse(cached.result))}
  operation={key,route,payload};
  }
+ if(handleSupplier(req,res,p,url))return;
  if(scanner.handle(req,res,p,body))return;
  if(currency.handle(req,res,p,body))return;
  if(erp.handle(req,res,p,body,url))return;

@@ -217,3 +217,19 @@ test('Purchases: preliminary invoices edit without posting, then approve exactly
  assert.equal((await f.request('/api/purchases','POST',{...saved.payload,status:'posted',draft_id:saved.id,expected_revision:saved.revision})).status,400);assert.equal((await f.request('/api/journal')).data.length,1);
  }finally{await f.cleanup()}
 });
+
+test('Suppliers: detail, filtered opening/closing, draft exclusion, exports and permission checks',async()=>{
+ const f=await fixture();try{await f.login();const supplier=await created(f,'/api/partners',{name:'مورد كشف <آمن>',type:'supplier'}),other=await created(f,'/api/partners',{name:'آخر',type:'supplier'});await created(f,'/api/products',{id:'SUPREP',name:'مادة الكشف',price:150,cost:0});
+ await created(f,'/api/purchases',{partner_id:supplier.id,supplier_invoice_no:'ONE',date:'2026-01-01',paid:40,lines:[{product_id:'SUPREP',qty:2,cost:50}]});
+ await created(f,'/api/purchases',{partner_id:supplier.id,supplier_invoice_no:'TWO',date:'2026-02-01',paid:0,lines:[{product_id:'SUPREP',qty:1,cost:50}]});
+ await created(f,'/api/purchases',{partner_id:supplier.id,status:'draft',supplier_invoice_no:'DRAFT',date:'2026-02-01',lines:[{product_id:'SUPREP',qty:10,cost:50}]});
+ await created(f,'/api/purchases',{partner_id:other.id,lines:[{product_id:'SUPREP',qty:1,cost:999}]});
+ const base='/api/partners/supplier-report?id='+supplier.id,all=(await f.request(base)).data;assert.equal(all.closing,110);assert.equal(all.debit,40);assert.equal(all.credit,150);assert.equal(all.invoices.length,2);assert.equal(all.drafts.length,1);assert.equal(all.invoices[0].lines[0].product_name,'مادة الكشف');
+ const filtered=(await f.request(base+'&from=2026-02-01&to=2026-02-28')).data;assert.equal(filtered.opening,60);assert.equal(filtered.closing,110);assert.equal(filtered.rows.length,1);assert.equal(filtered.invoices.length,1);assert.equal(filtered.drafts.length,1);
+ const empty=(await f.request(base+'&from=2026-03-01&to=2026-03-31')).data;assert.equal(empty.opening,110);assert.equal(empty.closing,110);assert.equal(empty.rows.length,0);
+ assert.equal((await f.request(base+'&from=2026-02-30')).status,400);assert.equal((await f.request(base+'&from=2026-03-01&to=2026-01-01')).status,400);
+ const excel=await f.request(base+'&format=xlsx');assert.equal(excel.status,200);assert.equal(excel.data.readUInt32LE(0),0x04034b50);assert.ok(excel.data.includes(Buffer.from('xl/worksheets/sheet1.xml')));
+ const html=await f.request(base+'&format=print');assert.ok(html.data.toString().includes('مورد كشف &lt;آمن&gt;'));assert.ok(!html.data.toString().includes('<آمن>'));
+ await created(f,'/api/users',{username:'noreport',password:'password123',role:'cashier',modules:['sales']});await f.request('/api/auth/logout','POST',{});await f.login('noreport','password123');assert.equal((await f.request(base)).status,403);assert.equal((await f.request(base+'&format=xlsx')).status,403);
+ }finally{await f.cleanup()}
+});

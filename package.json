@@ -28,6 +28,8 @@
     "files": [
       "electron-main.cjs",
       "server.mjs",
+      "supplier-reports.mjs",
+      "desktop-preload.cjs",
       "index.html",
       "package.json",
       "erp.mjs",

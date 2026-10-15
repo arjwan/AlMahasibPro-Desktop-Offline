@@ -1,4 +1,4 @@
-const {app,BrowserWindow,dialog}=require('electron');const {spawn}=require('node:child_process');const path=require('node:path');const fs=require('node:fs');let server;let window;
+const {app,BrowserWindow,dialog,ipcMain}=require('electron');const {spawn}=require('node:child_process');const path=require('node:path');const fs=require('node:fs');let server;let window;
 process.on('uncaughtException',(e)=>{
     try{
         const data=app ? app.getPath('userData') : (process.env.APPDATA ? path.join(process.env.APPDATA,'AlMahasibPro Offline') : 'C:\\\\temp\\\\electron-error.log');
@@ -54,7 +54,16 @@ app.whenReady().then(async()=>{
         return;
     }
 
-    window=new BrowserWindow({width:1450,height:900,minWidth:1000,minHeight:680,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    window=new BrowserWindow({width:1450,height:900,minWidth:1000,minHeight:680,webPreferences:{preload:path.join(__dirname,'desktop-preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    ipcMain.handle('supplier-report-pdf',async(event,query)=>{
+      if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||event.senderFrame.url!==`http://127.0.0.1:${port}/`||typeof query!=='string'||query.length>1000)throw Error('طلب غير مسموح');
+      const params=new URLSearchParams(query);for(const key of [...params.keys()])if(!['id','from','to'].includes(key))params.delete(key);params.set('format','print');
+      const target=`http://127.0.0.1:${port}/api/partners/supplier-report?${params}`;
+      const check=await window.webContents.session.fetch(target,{credentials:'include'});if(!check.ok)throw Error('لا يمكن تصدير الكشف؛ تحقق من الجلسة والصلاحيات');
+      const destination=await dialog.showSaveDialog(window,{title:'حفظ كشف المورد PDF',defaultPath:'supplier-statement.pdf',filters:[{name:'PDF',extensions:['pdf']}]});if(destination.canceled)return {canceled:true};
+      const report=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
+      try{await report.loadURL(target);const bytes=await report.webContents.printToPDF({printBackground:true,landscape:true,pageSize:'A4',preferCSSPageSize:true});fs.writeFileSync(destination.filePath,bytes);return {ok:true}}finally{report.destroy()}
+    });
     window.loadURL(`http://127.0.0.1:${port}/`);
     window.on('closed',()=>{window=null})
 });
