@@ -22,7 +22,9 @@ function migrate(){
     const backupPath=dbPath+'.bak';
     try{fs.copyFileSync(dbPath,backupPath)}catch(e){}
     
-    if(currentVersion<1){
+    const requiredTables=['settings','users','permissions','accounts','journal_entries','journal_items','warehouses','units','products','product_warehouse','inventory_moves','partners','purchase_invoices','purchase_items','sale_invoices','sale_items','sale_returns','sale_return_items'];
+    const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
+    if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
         db.exec(`
         PRAGMA foreign_keys=ON;
@@ -60,7 +62,7 @@ function migrate(){
         db.exec('PRAGMA user_version=1');
     }
     
-    if(currentVersion<2){
+    if(currentVersion<2 || !db.prepare('PRAGMA table_info(products)').all().some(c=>c.name==='cost')){
         log('Migrating to v2 (Adding missing columns/indexes)');
         // Ensure cost exists in products if old DB was used
         const cols=db.prepare('PRAGMA table_info(products)').all();
