@@ -9,6 +9,25 @@ try{
   await page.evaluate(async p=>await window.go(p),route);
   const content=await page.locator(route==='pos'?'#pos':route==='home'?'#home':'#placeholder').innerText();if(/تعذر تحميل|خطأ في الواجهة|جار تحميل|تم تجهيز تصميم القسم/.test(content))throw Error(route+': '+content);console.log('PAGE PASS',route,content.length);
  }
+
+ // Exercise accounting/report controls, not only their initial headings.
+ await page.evaluate(()=>window.go('accounts'));
+ await page.locator('#erp-accountcode').fill('1099');await page.locator('#erp-accountname').fill('حساب مراجعة الصفحتين');await page.locator('#erp-accounttype').selectOption('asset');await page.locator('#erp-accountparent').selectOption('1');await page.locator('#erp-form-account button').click();
+ await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('حساب مراجعة الصفحتين'));
+ await page.locator('#ws-desc').fill('قيد مراجعة الصفحتين');await page.locator('#ws-amount').fill('750');await page.locator('#ws-debit').selectOption('101');await page.locator('#ws-credit').selectOption('3');await page.locator('#ws-journal').click();
+ await page.waitForFunction(()=>document.querySelector('.workspace-table')?.closest('#ws-body')?.textContent.includes('قيد مراجعة الصفحتين'));
+ await page.locator('#erp-reverseid').selectOption({label:(await page.locator('#erp-reverseid option').allTextContents()).find(x=>x.includes('قيد مراجعة الصفحتين'))});await page.locator('#erp-form-reverse button').click();
+ await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('عكس قيد'));
+ await page.locator('#erp-assetname').fill('أصل مراجعة الصفحتين');await page.locator('#erp-assetcost').fill('12000');await page.locator('#erp-assetmonths').fill('12');await page.locator('#erp-form-asset button').click();
+ await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('أصل مراجعة الصفحتين'));
+ await page.locator('#erp-form-depreciation button').click();
+ await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('اندثار أصل مراجعة الصفحتين'));
+ await page.locator('#erp-budgetaccount').selectOption('503');await page.locator('#erp-budgetamount').fill('12000');await page.locator('#erp-form-budget button').click();
+ await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('11,000'));
+ await page.evaluate(()=>window.go('reports'));
+ for(const id of ['exportsales','exportstock','exportjournal'])if(await page.locator('#erp-'+id).count()!==1)throw Error('Missing report export '+id);
+ const downloaded=page.waitForEvent('download');await page.locator('#erp-exportjournal').click();const csv=await downloaded;if(csv.suggestedFilename()!=='exportjournal.csv')throw Error('Wrong journal export');
+ console.log('UI ACCOUNT CREATE, JOURNAL, REVERSAL, ASSET, DEPRECIATION, BUDGET AND REPORT CSV PASS');
  await page.evaluate(()=>window.go('stock'));await page.locator('#ws-id').fill('UI1');await page.locator('#ws-name').fill('مادة اختبار الواجهة');await page.locator('#ws-barcode').fill('123456789');await page.locator('#ws-cost').fill('100');await page.locator('#ws-price').fill('200');await page.locator('#ws-add').click();await page.waitForFunction(()=>document.querySelector('.workspace-table')?.textContent.includes('UI1'));
  await page.evaluate(()=>window.go('suppliers'));await page.locator('#ws-partyname').fill('مورد الواجهة');await page.locator('#ws-saveparty').click();await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('مورد الواجهة'));
  await page.evaluate(()=>window.go('purchases'));await page.locator('#erp-purchaseqty').fill('10');await page.locator('#erp-purchasecost').fill('100');await page.locator('#erp-purchasepaid').fill('1000');await page.locator('#erp-purchaseadd').click();await page.locator('#erp-purchasepost').click();await page.waitForFunction(()=>document.getElementById('erp-purchasestatus')?.textContent.includes('تم ترحيل'));

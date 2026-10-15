@@ -159,3 +159,32 @@ test('ERP: existing scanner protocol pairs over trusted test TLS, queues barcode
  assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);
  }finally{await f.cleanup()}
 });
+
+test('ERP: legacy journal without reference preserves balances and loads accounting/report endpoints twice',async()=>{
+ const f=await fixture();try{
+ await f.login();
+ const entry=await created(f,'/api/journal',{description:'رصيد قديم محفوظ',lines:[{account_id:'101',debit:750},{account_id:'3',credit:750}]});
+ await f.stop();
+ const old=new DatabaseSync(f.dbPath);
+ old.exec('ALTER TABLE journal_entries DROP COLUMN reference');
+ old.close();
+ for(let run=0;run<2;run++){
+  await f.start();await f.login();
+  for(const path of ['/api/accounts','/api/journal','/api/periods','/api/assets','/api/budgets','/api/reports/financial','/api/stock/balances','/api/ledger?account_id=101']){
+   const result=await f.request(path);assert.equal(result.status,200,path+': '+JSON.stringify(result.data));
+  }
+  const journals=(await f.request('/api/journal')).data;
+  assert.equal(journals.find(x=>x.id===entry.id).description,'رصيد قديم محفوظ');
+  assert.equal(journals.find(x=>x.id===entry.id).debit,750);
+  const ledger=(await f.request('/api/ledger?account_id=101')).data;
+  assert.equal(ledger.at(-1).balance,750);
+  const report=(await f.request('/api/reports/financial')).data;
+  assert.equal(report.assets,750);assert.equal(report.equity,750);assert.equal(report.debit,report.credit);
+  await f.stop();
+ }
+ const check=new DatabaseSync(f.dbPath,{readOnly:true});
+ assert.ok(check.prepare('PRAGMA table_info(journal_entries)').all().some(x=>x.name==='reference'));
+ assert.equal(check.prepare('SELECT COUNT(*) AS n FROM journal_entries').get().n,1);
+ assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
+ }finally{await f.cleanup()}
+});

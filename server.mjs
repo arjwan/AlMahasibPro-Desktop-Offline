@@ -36,7 +36,8 @@ function migrate(){
     const requiredTables=['settings','users','permissions','accounts','journal_entries','journal_items','warehouses','units','products','product_warehouse','inventory_moves','partners','purchase_invoices','purchase_items','sale_invoices','sale_items','sale_returns','sale_return_items'];
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
-    const schemaChange=currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
+    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)fs.copyFileSync(dbPath,backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -91,6 +92,12 @@ function migrate(){
       }
     }
     if(!columns('sale_invoices').has('warehouse_id'))db.exec('ALTER TABLE sale_invoices ADD COLUMN warehouse_id INTEGER NOT NULL DEFAULT 1');
+    // Older installed databases can already have journal_entries without reference.
+    // Reconcile before ERP queries use it; preserve amounts and never invent references.
+    if(!columns('journal_entries').has('reference')){
+      log('Adding missing journal_entries column: reference');
+      db.exec('ALTER TABLE journal_entries ADD COLUMN reference TEXT');
+    }
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
