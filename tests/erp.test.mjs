@@ -180,7 +180,7 @@ test('ERP: legacy journal without reference preserves balances and loads account
   assert.equal(ledger.at(-1).balance,750);
   const report=(await f.request('/api/reports/financial')).data;
   assert.equal(report.assets,750);assert.equal(report.equity,750);assert.equal(report.debit,report.credit);
-  await f.stop();
+  if(run===0)await f.stop();
  }
  const check=new DatabaseSync(f.dbPath,{readOnly:true});
  assert.ok(check.prepare('PRAGMA table_info(journal_entries)').all().some(x=>x.name==='reference'));
