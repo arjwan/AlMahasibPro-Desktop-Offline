@@ -139,7 +139,7 @@ const server=http.createServer((req,res)=>{
  }
  if(req.method==='GET'&&p==='/api/invoices')return send(res,200,db.prepare('SELECT * FROM sale_invoices ORDER BY id DESC LIMIT 200').all());
  if(req.method==='GET'&&p==='/api/held')return send(res,200,db.prepare("SELECT * FROM sale_invoices WHERE status='held' ORDER BY id DESC").all());
- const invoiceMatch=p.match(/^\\/api\\/invoices\\/(\\d+)$/);
+ const invoiceMatch=p.match(new RegExp('^/api/invoices/([0-9]+)$'));
  if(req.method==='GET'&&invoiceMatch){
  const invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(Number(invoiceMatch[1]));
  if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
@@ -172,7 +172,7 @@ const server=http.createServer((req,res)=>{
  });
  return send(res,201,result);
  }
- const complete=p.match(/^\\/api\\/held\\/(\\d+)\\/complete$/);
+ const complete=p.match(new RegExp('^/api/held/([0-9]+)/complete$'));
  if(req.method==='POST'&&complete){
  const result=transaction(()=>{
  const id=Number(complete[1]),invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(id);
