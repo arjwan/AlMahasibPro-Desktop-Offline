@@ -4,6 +4,7 @@ import {spawn} from 'node:child_process';import {mkdtempSync,rmSync} from 'node:
 const root=fileURLToPath(new URL('../',import.meta.url)),dir=mkdtempSync(join(tmpdir(),'alma-ui-'));let logs='';const child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,ALMAHASIB_DB:join(dir,'test.sqlite'),PORT:'0'},stdio:['ignore','pipe','pipe']});child.stderr.on('data',x=>logs+=x);const base=await new Promise((resolve,reject)=>{child.stdout.on('data',x=>{const m=String(x).match(/http:\/\/127.0.0.1:\d+/);if(m)resolve(m[0])});child.on('exit',()=>reject(Error(logs)))});let browser;
 try{
  browser=await playwright.launch({executablePath:process.env.ALMAHASIB_CHROMIUM||undefined,args:process.env.ALMAHASIB_CHROMIUM?['--no-sandbox','--disable-gpu','--disable-software-rasterizer','--disable-dev-shm-usage','--no-zygote','--single-process']:[],headless:true});const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',x=>{errors.push(x.message);console.log('BROWSER ERROR',x.message)});page.on('dialog',d=>{console.log('DIALOG',d.message());d.accept()});
+ async function submit(id){await page.evaluate(id=>{const form=document.getElementById(id),handler=form.onsubmit;window.reviewSubmit=new Promise((resolve,reject)=>{form.onsubmit=event=>Promise.resolve(handler(event)).then(resolve,reject)})},id);await page.locator('#'+id+' button').click();await page.evaluate(()=>window.reviewSubmit)}
  await page.goto(base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});
  for(const route of ['sales','purchases','stock','customers','suppliers','accounts','banks','reports','branches','agents','settings','devices','returns','shifts','pos','home']){
   await page.evaluate(async p=>await window.go(p),route);
@@ -12,20 +13,20 @@ try{
 
  // Exercise accounting/report controls, not only their initial headings.
  await page.evaluate(()=>window.go('accounts'));
- await page.locator('#erp-accountcode').fill('1099');await page.locator('#erp-accountname').fill('حساب مراجعة الصفحتين');await page.locator('#erp-accounttype').selectOption('asset');await page.locator('#erp-accountparent').selectOption('1');await page.locator('#erp-form-account button').click();
+ await page.locator('#erp-accountcode').fill('1099');await page.locator('#erp-accountname').fill('حساب مراجعة الصفحتين');await page.locator('#erp-accounttype').selectOption('asset');await page.locator('#erp-accountparent').selectOption('1');await submit('erp-form-account');
  await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('حساب مراجعة الصفحتين'));
  await page.locator('#ws-desc').fill('قيد مراجعة الصفحتين');await page.locator('#ws-amount').fill('750');await page.locator('#ws-debit').selectOption('101');await page.locator('#ws-credit').selectOption('3');await page.locator('#ws-journal').click();
  await page.waitForFunction(()=>document.querySelector('.workspace-table')?.closest('#ws-body')?.textContent.includes('قيد مراجعة الصفحتين'));
- await page.locator('#erp-reverseid').selectOption({label:(await page.locator('#erp-reverseid option').allTextContents()).find(x=>x.includes('قيد مراجعة الصفحتين'))});await page.locator('#erp-form-reverse button').click();
+ await page.locator('#erp-reverseid').selectOption({label:(await page.locator('#erp-reverseid option').allTextContents()).find(x=>x.includes('قيد مراجعة الصفحتين'))});await submit('erp-form-reverse');
  await page.waitForFunction(()=>[...document.querySelectorAll('.workspace-table')].some(x=>x.textContent.includes('عكس قيد')));
- await page.locator('#erp-assetname').fill('أصل مراجعة الصفحتين');await page.locator('#erp-assetcost').fill('12000');await page.locator('#erp-assetmonths').fill('12');await page.locator('#erp-form-asset button').click();
+ await page.locator('#erp-assetname').fill('أصل مراجعة الصفحتين');await page.locator('#erp-assetcost').fill('12000');await page.locator('#erp-assetmonths').fill('12');await submit('erp-form-asset');
  await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('أصل مراجعة الصفحتين'));
- await page.locator('#erp-form-depreciation button').click();
+ await submit('erp-form-depreciation');
  await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('اندثار أصل مراجعة الصفحتين'));
- await page.locator('#erp-budgetaccount').selectOption('503');await page.locator('#erp-budgetamount').fill('12000');await page.locator('#erp-form-budget button').click();
+ await page.locator('#erp-budgetaccount').selectOption('503');await page.locator('#erp-budgetamount').fill('12000');await submit('erp-form-budget');
  await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('11,000'));
  await page.evaluate(()=>window.go('reports'));
- for(const id of ['exportsales','exportstock','exportjournal'])if(await page.locator('#erp-'+id).count()!==1)throw Error('Missing report export '+id);
+ for(const id of ['exportsales','exportstock','exportjournal'])if(await page.locator('#erp-'+id).count()!==1)throw Error('Missing report export '+id+': '+await page.locator('#ws-body').innerText());
  const downloaded=page.waitForEvent('download');await page.locator('#erp-exportjournal').click();const csv=await downloaded;if(csv.suggestedFilename()!=='exportjournal.csv')throw Error('Wrong journal export');
  console.log('UI ACCOUNT CREATE, JOURNAL, REVERSAL, ASSET, DEPRECIATION, BUDGET AND REPORT CSV PASS');
  await page.evaluate(()=>window.go('stock'));await page.locator('#ws-id').fill('UI1');await page.locator('#ws-name').fill('مادة اختبار الواجهة');await page.locator('#ws-barcode').fill('123456789');await page.locator('#ws-cost').fill('100');await page.locator('#ws-price').fill('200');await page.locator('#ws-add').click();await page.waitForFunction(()=>document.querySelector('.workspace-table')?.textContent.includes('UI1'));
