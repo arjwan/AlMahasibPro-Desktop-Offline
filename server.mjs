@@ -33,7 +33,7 @@ function migrate(){
     const requiredTables=['settings','users','permissions','accounts','journal_entries','journal_items','warehouses','units','products','product_warehouse','inventory_moves','partners','purchase_invoices','purchase_items','sale_invoices','sale_items','sale_returns','sale_return_items'];
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
-    const schemaChange=currentVersion<4||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const schemaChange=currentVersion<5||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)fs.copyFileSync(dbPath,backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -141,7 +141,7 @@ function postJournal(description,reference,lines,accountingDate=null){
 }
 function postSale(invoiceId){
  const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
- const cost=db.prepare('SELECT COALESCE(SUM(qty*cost_snapshot),0) AS total FROM sale_items WHERE invoice_id=?').get(invoiceId).total;
+ const cost=db.prepare('SELECT COALESCE(SUM(COALESCE(cost_total,qty*cost_snapshot)),0) AS total FROM sale_items WHERE invoice_id=?').get(invoiceId).total;
  const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
  postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',cost,0],['102',0,cost]]);
  erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
@@ -150,14 +150,22 @@ const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM pr
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
 function readJSON(body){try{const value=JSON.parse(body||'{}');if(!value||Array.isArray(value)||typeof value!=='object')inputError('بيانات JSON غير صحيحة');return value}catch{inputError('بيانات JSON غير صحيحة')}}
-function inventory(productId,warehouseId,delta,type,reference){
+function inventory(productId,warehouseId,delta,type,reference,carryingValue=null){
  erp.periodOpen();
  if(delta<0&&erp.available(productId,warehouseId)<-delta)inputError('الرصيد المتاح غير كاف أو محجوز');
+ const value=carryingValue??(delta<0?erp.inventoryCost(productId,-delta):db.prepare('SELECT cost FROM products WHERE id=?').get(productId)?.cost*delta);
+ if(type!=='transfer'&&(!Number.isSafeInteger(value)||value<0))inputError('قيمة المخزون غير صحيحة');
  const row=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(productId,warehouseId);
  if(!row)db.prepare('INSERT INTO product_warehouse(product_id,warehouse_id,stock) VALUES(?,?,0)').run(productId,warehouseId);
  const before=row?.stock||0;if(!Number.isSafeInteger(before+delta))inputError('الرصيد كبير جداً');
  const updated=db.prepare('UPDATE product_warehouse SET stock=stock+? WHERE product_id=? AND warehouse_id=? AND stock+?>=0').run(delta,productId,warehouseId,delta);
  if(!updated.changes)inputError('الرصيد المخزني غير كاف');
+ if(type!=='transfer'){
+ const product=db.prepare('SELECT book_value FROM products WHERE id=?').get(productId),book=(product.book_value||0)+(delta<0?-value:value);
+ if(!Number.isSafeInteger(book)||book<0)inputError('قيمة المخزون كبيرة أو غير صحيحة');
+ const qty=db.prepare('SELECT COALESCE(SUM(stock),0) AS n FROM product_warehouse WHERE product_id=?').get(productId).n;
+ db.prepare('UPDATE products SET book_value=?,cost=CASE WHEN ?>0 THEN ? ELSE cost END WHERE id=?').run(book,qty,qty?Math.round(book/qty):0,productId);
+ }
  db.prepare('INSERT INTO inventory_moves(product_id,warehouse_id,delta,type,reference,date,created_at) VALUES(?,?,?,?,?,?,?)').run(productId,warehouseId,delta,type,reference,new Date().toISOString().slice(0,10),new Date().toISOString());
 }
 let operation=null;
@@ -187,7 +195,7 @@ const server=http.createServer((req,res)=>{
  if(erp.handle(req,res,p,body,url))return;
  if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
  if(req.method==='GET'&&p==='/erp-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'erp-ui.js')));return}
- if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.4.0'});
+ if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.4.1'});
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
  if(req.method==='POST'&&p==='/api/products'){
@@ -203,8 +211,8 @@ const server=http.createServer((req,res)=>{
  if(!v.product_id||!Number.isSafeInteger(qty)||qty===0||!Number.isSafeInteger(warehouseId))inputError('بيانات حركة المخزن غير صحيحة');
  transaction(()=>{
  const product=db.prepare('SELECT * FROM products WHERE id=?').get(String(v.product_id));if(!product)inputError('المادة غير موجودة');
- inventory(product.id,warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية'));
- const value=Math.abs(qty)*product.cost;
+ const value=qty<0?erp.inventoryCost(product.id,-qty):qty*product.cost;
+ inventory(product.id,warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية'),value);
  postJournal('تسوية مخزون', 'ADJ-'+crypto.randomUUID(),qty>0?[['102',value,0],['3',0,value]]:[['501',value,0],['102',0,value]]);
  erp.audit('stock-adjust',product.id,{qty,warehouseId});
  });
@@ -242,13 +250,9 @@ const server=http.createServer((req,res)=>{
  db.prepare('UPDATE purchase_invoices SET invoice_no=? WHERE id=?').run(invoiceNo,id);
  db.prepare('UPDATE purchase_invoices SET warehouse_id=?,paid=? WHERE id=?').run(warehouseId,paid,id);
  for(const item of items){
- const previous=db.prepare('SELECT COALESCE(SUM(stock),0) AS n FROM product_warehouse WHERE product_id=?').get(item.product.id).n;
- const current=db.prepare('SELECT cost FROM products WHERE id=?').get(item.product.id).cost;
- const average=Math.round((previous*current+item.qty*item.cost)/(previous+item.qty));
- db.prepare('UPDATE products SET cost=? WHERE id=?').run(average,item.product.id);
  db.prepare('INSERT INTO purchase_items(invoice_id,product_id,qty,cost,line_total) VALUES(?,?,?,?,?)').run(id,item.product.id,item.qty,item.cost,item.total);
  db.prepare('UPDATE purchase_items SET product_name=? WHERE invoice_id=? AND product_id=?').run(item.product.name,id,item.product.id);
- inventory(item.product.id,warehouseId,item.qty,'purchase',invoiceNo);
+ inventory(item.product.id,warehouseId,item.qty,'purchase',invoiceNo,item.total);
  }
  const entry=db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(date,'فاتورة شراء '+invoiceNo,invoiceNo,now);
  const journalId=Number(entry.lastInsertRowid),add=db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)');
@@ -306,7 +310,7 @@ const server=http.createServer((req,res)=>{
  for(const line of prepared){
  db.prepare('INSERT INTO sale_items(invoice_id,product_id,qty,price,line_total,cost_snapshot) VALUES(?,?,?,?,?,?)').run(id,line.product.id,line.qty,line.price,line.lineTotal,line.product.cost);
  db.prepare('UPDATE sale_items SET product_name=? WHERE invoice_id=? AND product_id=?').run(line.product.name,id,line.product.id);
- if(status==='paid')inventory(line.product.id,warehouseId,-line.qty,'sale','S-'+id);
+ if(status==='paid'){const cost=erp.inventoryCost(line.product.id,line.qty);db.prepare('UPDATE sale_items SET cost_total=? WHERE invoice_id=? AND product_id=? AND cost_total IS NULL').run(cost,id,line.product.id);inventory(line.product.id,warehouseId,-line.qty,'sale','S-'+id,cost);}
  }
  db.prepare('UPDATE sale_invoices SET cashier_id=? WHERE id=?').run(req.user.id,id);
  db.prepare('UPDATE sale_invoices SET source=?,workflow=? WHERE id=?').run(v.source==='company'?'company':'pos',v.source==='company'?'draft':status==='held'?'draft':'loaded',id);
@@ -326,7 +330,7 @@ const server=http.createServer((req,res)=>{
  const id=Number(complete[1]),invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(id);
  if(invoice?.source==='company')inputError('فاتورة الشركات تحتاج موافقة وتحميلاً من قسم المبيعات');
  if(!invoice||invoice.status!=='held'||invoice.cancelled)inputError('الفاتورة ليست معلقة');
- for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id))inventory(item.product_id,invoice.warehouse_id,-item.qty,'sale','S-'+id);
+ for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id)){const product=db.prepare('SELECT cost FROM products WHERE id=?').get(item.product_id),cost=erp.inventoryCost(item.product_id,item.qty);db.prepare('UPDATE sale_items SET cost_snapshot=?,cost_total=? WHERE id=?').run(product.cost,cost,item.id);inventory(item.product_id,invoice.warehouse_id,-item.qty,'sale','S-'+id,cost);}
  db.prepare("UPDATE sale_invoices SET status='paid' WHERE id=?").run(id);
  postSale(id);
  return {id,status:'paid'};

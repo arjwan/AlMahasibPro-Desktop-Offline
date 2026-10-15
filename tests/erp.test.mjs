@@ -99,3 +99,17 @@ test('ERP: old database migration preserves products and startup does not duplic
  const check=new DatabaseSync(database,{readOnly:true});assert.equal(check.prepare("SELECT name FROM products WHERE id='legacy'").get().name,'قديم');assert.ok(check.prepare('PRAGMA table_info(products)').all().some(x=>x.name==='barcode'));assert.equal(check.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,1);assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
  }finally{if(child?.exitCode===null)child.kill();rmSync(dir,{recursive:true,force:true})}
 });
+
+test('ERP: carrying value and discounted returns preserve rounding remainders exactly',async()=>{
+ const f=await fixture();try{
+ await f.login();const supplier=await created(f,'/api/partners',{name:'مورد التقريب',type:'supplier'});await created(f,'/api/products',{id:'ROUND',name:'اختبار القيمة',price:100,cost:0});
+ await created(f,'/api/purchases',{partner_id:supplier.id,paid:0,lines:[{product_id:'ROUND',qty:2,cost:10},{product_id:'ROUND',qty:1,cost:11}]});
+ let balance=(await f.request('/api/stock/balances')).data[0];assert.equal(balance.value,31);assert.equal(balance.stock,3);
+ const sale=await created(f,'/api/invoices',{discount:1,lines:[{id:'ROUND',qty:1},{id:'ROUND',qty:2}]});const detail=(await f.request('/api/invoices/'+sale.id)).data;assert.equal(detail.lines.reduce((n,x)=>n+x.cost_total,0),31);assert.equal(detail.lines.reduce((n,x)=>n+x.net_amount,0),299);
+ balance=(await f.request('/api/stock/balances')).data[0];assert.equal(balance.value,0);assert.equal(balance.stock,0);
+ await created(f,'/api/returns',{kind:'sale',invoice_id:sale.id,cash_refund:99,reason:'أول',lines:[{item_id:detail.lines[0].id,qty:1}]});
+ await created(f,'/api/returns',{kind:'sale',invoice_id:sale.id,cash_refund:200,reason:'الباقي',lines:[{item_id:detail.lines[1].id,qty:2}]});
+ balance=(await f.request('/api/stock/balances')).data[0];assert.equal(balance.value,31);assert.equal(balance.stock,3);
+ const accounts=(await f.request('/api/accounts')).data,stockAccount=accounts.find(x=>x.id==='102');assert.equal(stockAccount.debit-stockAccount.credit,31);const financial=(await f.request('/api/reports/financial')).data;assert.equal(financial.profit,0);assert.equal(financial.debit,financial.credit);
+ }finally{await f.cleanup()}
+});

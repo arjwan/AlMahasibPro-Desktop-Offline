@@ -25,8 +25,10 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
  column('stock_reservations','invoice_id','INTEGER');
  column('sale_invoices','source',"TEXT NOT NULL DEFAULT 'pos'");column('sale_invoices','workflow',"TEXT NOT NULL DEFAULT 'loaded'");
  column('sale_invoices','cancelled','INTEGER NOT NULL DEFAULT 0');column('sale_invoices','paid','INTEGER');column('sale_invoices','agent_id','INTEGER');column('sale_invoices','branch_id','INTEGER');
- column('sale_items','cost_snapshot','INTEGER');column('sale_items','net_amount','INTEGER');column('sale_items','product_name','TEXT');column('purchase_items','product_name','TEXT');column('audit_events','actor_id','TEXT');column('cash_vouchers','partner_id','TEXT');
+ column('products','book_value','INTEGER');column('sale_items','cost_total','INTEGER');column('sale_items','cost_snapshot','INTEGER');column('sale_items','net_amount','INTEGER');column('sale_items','product_name','TEXT');column('purchase_items','product_name','TEXT');column('audit_events','actor_id','TEXT');column('cash_vouchers','partner_id','TEXT');
  for(const [id,code,name,type,parent] of [['105','1050','الأصول الثابتة','asset','1'],['106','1060','مجمع الاندثار','asset','1'],['502','5020','فروق الجرد والصندوق','expense','5'],['503','5030','مصروف الاندثار','expense','5']])db.prepare('INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,?,?)').run(id,code,name,type,parent);
+ db.exec('UPDATE products SET book_value=cost*COALESCE((SELECT SUM(stock) FROM product_warehouse w WHERE w.product_id=products.id),0) WHERE book_value IS NULL');
+ function inventoryCost(productId,qty){const product=one('products',productId),stock=db.prepare('SELECT COALESCE(SUM(stock),0) AS n FROM product_warehouse WHERE product_id=?').get(productId).n;if(qty>stock)inputError('الرصيد لا يكفي لاحتساب التكلفة');if(!stock)return 0;return Number(BigInt(product.book_value||0)*BigInt(qty)/BigInt(stock))}
  const now=()=>new Date().toISOString(),today=()=>now().slice(0,10);
  let actor=null;function setActor(id){actor=id}
  function audit(action,entity,details={}){db.prepare('INSERT INTO audit_events(date,action,entity,details,actor_id) VALUES(?,?,?,?,?)').run(now(),action,String(entity),JSON.stringify(details),actor)}
@@ -38,7 +40,7 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
  for(const day of new Set([today(),...rows.map(x=>x.start<today()?today():x.start)]))maximum=Math.max(maximum,rows.filter(x=>x.start<=day&&x.end>=day).reduce((n,x)=>n+x.qty,0));return maximum;
  }
  function available(product,warehouse){return (db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(product,warehouse)?.stock||0)-reserved(product,warehouse)}
- function stockValue(){return db.prepare('SELECT p.*,w.warehouse_id,w.stock,h.name AS warehouse,COALESCE((SELECT SUM(r.qty) FROM stock_reservations r WHERE r.product_id=p.id AND r.warehouse_id=w.warehouse_id AND r.active=1 AND r.start<=? AND r.end>=?),0) AS reserved FROM products p JOIN product_warehouse w ON w.product_id=p.id JOIN warehouses h ON h.id=w.warehouse_id ORDER BY p.name,h.id').all(today(),today()).map(x=>({...x,available:x.stock-x.reserved,value:x.stock*x.cost}))}
+ function stockValue(){return db.prepare('SELECT p.*,w.warehouse_id,w.stock,h.name AS warehouse,COALESCE((SELECT SUM(r.qty) FROM stock_reservations r WHERE r.product_id=p.id AND r.warehouse_id=w.warehouse_id AND r.active=1 AND r.start<=? AND r.end>=?),0) AS reserved FROM products p JOIN product_warehouse w ON w.product_id=p.id JOIN warehouses h ON h.id=w.warehouse_id ORDER BY p.name,h.id').all(today(),today()).map((x,i,rows)=>{const same=rows.filter(p=>p.id===x.id),total=same.reduce((n,p)=>n+p.stock,0),prefix=rows.slice(0,i).filter(p=>p.id===x.id).reduce((n,p)=>n+p.stock,0);return {...x,available:x.stock-x.reserved,value:total?Number(BigInt(x.book_value||0)*BigInt(prefix+x.stock)/BigInt(total)-BigInt(x.book_value||0)*BigInt(prefix)/BigInt(total)):0}})}
  function one(table,id){const x=db.prepare('SELECT * FROM '+table+' WHERE id=?').get(id);if(!x)inputError('السجل غير موجود');return x}
  function postReturn(v){
   periodOpen();const kind=v.kind;if(!['sale','purchase'].includes(kind))inputError('نوع المرتجع غير صحيح');
@@ -57,9 +59,11 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
    let netAmount=item.line_total;
    if(sale){if(item.net_amount!==null)netAmount=item.net_amount;else{const prefix=db.prepare('SELECT COALESCE(SUM(line_total),0) AS n FROM sale_items WHERE invoice_id=? AND id<?').get(invoiceId,item.id).n;netAmount=invoice.subtotal?Number((BigInt(prefix)+BigInt(item.line_total))*BigInt(invoice.net)/BigInt(invoice.subtotal)-BigInt(prefix)*BigInt(invoice.net)/BigInt(invoice.subtotal)):0}}
    const amount=Number(BigInt(netAmount)*BigInt(returned+qty)/BigInt(item.qty)-BigInt(netAmount)*BigInt(returned)/BigInt(item.qty));
-   const cost=sale?item.cost_snapshot: item.cost;
+   const cost=sale?item.cost_snapshot:item.cost;
+   const historical=sale?(item.cost_total??item.qty*cost):item.qty*cost;
+   const costTotal=sale?Number(BigInt(historical)*BigInt(returned+qty)/BigInt(item.qty)-BigInt(historical)*BigInt(returned)/BigInt(item.qty)):0;
    if(!sale&&available(item.product_id,invoice.warehouse_id)<qty)inputError('الرصيد المتاح لا يكفي لإرجاع المشتريات');
-   total+=amount;totalCost+=qty*cost;lines.push({item,qty,amount,cost});
+   total+=amount;totalCost+=costTotal;lines.push({item,qty,amount,cost,costTotal});
   }
   if(total+prior.amount>invoice.net||refund>total)inputError('مبلغ المرتجع غير صحيح');
   const paid=invoice.paid??(invoice.payment_method==='credit'?0:invoice.net);
@@ -67,12 +71,15 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
   if(total-refund>outstanding)inputError('حدد المبلغ النقدي المسترد بما يطابق رصيد الفاتورة');
   if(refund>Math.max(0,paid-prior.cash))inputError('المسترد النقدي أكبر من المدفوع المتبقي');
   const id=Number(db.prepare('INSERT INTO document_returns(kind,invoice_id,date,amount,cash_refund,reason) VALUES(?,?,?,?,?,?)').run(kind,invoiceId,today(),total,refund,reason).lastInsertRowid),ref='R-'+id;
+  let purchaseCarrying=0;
   for(const l of lines){
-   if(sale){const stock=db.prepare('SELECT COALESCE(SUM(stock),0) AS n FROM product_warehouse WHERE product_id=?').get(l.item.product_id).n,current=one('products',l.item.product_id).cost;db.prepare('UPDATE products SET cost=? WHERE id=?').run(Math.round((stock*current+l.qty*l.cost)/(stock+l.qty)),l.item.product_id)}
-   inventory(l.item.product_id,invoice.warehouse_id,sale?l.qty:-l.qty,'return',ref);db.prepare('INSERT INTO document_return_lines(return_id,item_id,product_id,qty,amount,cost) VALUES(?,?,?,?,?,?)').run(id,l.item.id,l.item.product_id,l.qty,l.amount,l.cost)}
+   const costTotal=sale?l.costTotal:inventoryCost(l.item.product_id,l.qty);purchaseCarrying+=sale?0:costTotal;
+   inventory(l.item.product_id,invoice.warehouse_id,sale?l.qty:-l.qty,'return',ref,costTotal);
+   db.prepare('INSERT INTO document_return_lines(return_id,item_id,product_id,qty,amount,cost) VALUES(?,?,?,?,?,?)').run(id,l.item.id,l.item.product_id,l.qty,l.amount,l.cost)
+  }
   const cash=invoice.payment_method==='bank'?'103':'101';
-  const inventoryCost=sale?totalCost:lines.reduce((n,l)=>n+l.qty*one('products',l.item.product_id).cost,0);
-  const entries=sale?[[cash,0,refund],['104',0,total-refund],['401',total,0],['102',totalCost,0],['501',0,totalCost]]:[['101',refund,0],['201',total-refund,0],['102',0,inventoryCost],['501',Math.max(0,inventoryCost-total),Math.max(0,total-inventoryCost)]];
+  const carrying=sale?totalCost:purchaseCarrying;
+  const entries=sale?[[cash,0,refund],['104',0,total-refund],['401',total,0],['102',totalCost,0],['501',0,totalCost]]:[['101',refund,0],['201',total-refund,0],['102',0,carrying],['501',Math.max(0,carrying-total),Math.max(0,total-carrying)]];
   const entry=postJournal('مرتجع '+invoice.invoice_no,ref,entries);db.prepare('UPDATE document_returns SET entry_id=? WHERE id=?').run(entry,id);audit('return',id,{kind,invoiceId,total});return {id,amount:total,entry_id:entry};
  }
  function submitCompany(id){
@@ -104,7 +111,7 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
   if(post&&p==='/api/budgets'){const year=integer(v.year,'السنة',2000),amount=integer(v.amount,'الموازنة');if(year>2200)inputError('السنة غير صحيحة');one('accounts',String(v.account_id));db.prepare('INSERT INTO budgets(account_id,year,amount) VALUES(?,?,?) ON CONFLICT(account_id,year) DO UPDATE SET amount=excluded.amount').run(String(v.account_id),year,amount);audit('budget',v.account_id,{year,amount});return ok({ok:true},201)}
   if(get&&p==='/api/bank/reconciliations')return ok(db.prepare('SELECT * FROM bank_reconciliations ORDER BY id DESC').all());
   if(post&&p==='/api/bank/reconciliations')return ok(transaction(()=>{const statement=Number(v.statement_balance);if(!Number.isSafeInteger(statement))inputError('رصيد كشف البنك غير صحيح');const balance=db.prepare("SELECT COALESCE(SUM(debit-credit),0) AS n FROM journal_items WHERE account_id='103'").get().n;const id=Number(db.prepare('INSERT INTO bank_reconciliations(date,account_id,book_balance,statement_balance,difference,description) VALUES(?,?,?,?,?,?)').run(today(),'103',balance,statement,statement-balance,String(v.description||'')).lastInsertRowid);audit('bank-reconciliation',id);return {id,book_balance:balance,difference:statement-balance}}),201);
-  if(post&&p==='/api/stock/count')return ok(transaction(()=>{periodOpen();const product=one('products',String(v.product_id)),warehouse=integer(v.warehouse_id,'المخزن',1),counted=integer(v.counted,'الكمية الفعلية'),record=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(product.id,warehouse),stock=record?.stock||0;if(v.expected!==undefined&&Number(v.expected)!==stock)inputError('تغير الرصيد منذ فتح الجرد؛ أعد تحميل الصفحة');const delta=counted-stock,ref='COUNT-'+crypto.randomUUID();if(delta){inventory(product.id,warehouse,delta,'adjustment',ref);const amount=Math.abs(delta)*product.cost;postJournal('تسوية جرد '+product.name,ref,delta>0?[['102',amount,0],['502',0,amount]]:[['502',amount,0],['102',0,amount]])}audit('stock-count',ref,{product:product.id,warehouse,stock,counted});return {reference:ref,delta}}),201);
+  if(post&&p==='/api/stock/count')return ok(transaction(()=>{periodOpen();const product=one('products',String(v.product_id)),warehouse=integer(v.warehouse_id,'المخزن',1),counted=integer(v.counted,'الكمية الفعلية'),record=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(product.id,warehouse),stock=record?.stock||0;if(v.expected!==undefined&&Number(v.expected)!==stock)inputError('تغير الرصيد منذ فتح الجرد؛ أعد تحميل الصفحة');const delta=counted-stock,ref='COUNT-'+crypto.randomUUID();if(delta){const amount=delta<0?inventoryCost(product.id,-delta):delta*product.cost;inventory(product.id,warehouse,delta,'adjustment',ref,amount);postJournal('تسوية جرد '+product.name,ref,delta>0?[['102',amount,0],['502',0,amount]]:[['502',amount,0],['102',0,amount]])}audit('stock-count',ref,{product:product.id,warehouse,stock,counted});return {reference:ref,delta}}),201);
   if(post&&p==='/api/products/import')return ok(transaction(()=>{if(!Array.isArray(v.rows)||!v.rows.length||v.rows.length>10000)inputError('ملف الاستيراد غير صحيح');const ids=[];for(const row of v.rows){const id=String(row.id||'').trim(),name=String(row.name||'').trim(),price=integer(row.price,'السعر'),cost=integer(row.cost||0,'التكلفة');if(!id||!name)inputError('رمز واسم المادة مطلوبان');db.prepare('INSERT INTO products(id,name,barcode,price,cost,category,emoji) VALUES(?,?,?,?,?,?,?)').run(id,name,row.barcode?String(row.barcode):null,price,cost,String(row.category||''),'📦');ids.push(id)}audit('product-import','catalog',{count:ids.length});return {count:ids.length}}),201);
   if(get&&p==='/api/periods')return ok(db.prepare('SELECT * FROM fiscal_periods ORDER BY start DESC').all());
   if(post&&p==='/api/periods')return ok(transaction(()=>{const start=date(v.start),end=date(v.end);if(start>end||db.prepare('SELECT id FROM fiscal_periods WHERE start<=? AND end>=?').get(end,start))inputError('الفترة متداخلة أو تاريخها غير صحيح');const id=Number(db.prepare('INSERT INTO fiscal_periods(name,start,end) VALUES(?,?,?)').run(String(v.name||'فترة'),start,end).lastInsertRowid);audit('period-create',id);return {id}}),201);
@@ -133,7 +140,7 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
     if(!grants.includes('stock'))inputError('التحميل يحتاج صلاحية المخزن');if(invoice.workflow!=='approved')inputError('اعتمد الفاتورة قبل التحميل');
     db.prepare('UPDATE stock_reservations SET active=0 WHERE invoice_id=?').run(invoice.id);
     for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoice.id)){
-     const product=one('products',item.product_id);db.prepare('UPDATE sale_items SET cost_snapshot=? WHERE id=?').run(product.cost,item.id);inventory(item.product_id,invoice.warehouse_id,-item.qty,'sale',invoice.invoice_no);
+     const product=one('products',item.product_id),cost=inventoryCost(item.product_id,item.qty);db.prepare('UPDATE sale_items SET cost_snapshot=?,cost_total=? WHERE id=?').run(product.cost,cost,item.id);inventory(item.product_id,invoice.warehouse_id,-item.qty,'sale',invoice.invoice_no,cost);
     }
     db.prepare("UPDATE sale_invoices SET workflow='loaded',status='paid' WHERE id=?").run(invoice.id);postSale(invoice.id);
    }
@@ -163,6 +170,6 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
   }
   return false;
  }
- db.exec('PRAGMA user_version=4');
- return {handle,audit,periodOpen,available,reserved,submitCompany,setActor};
+ db.exec('PRAGMA user_version=5');
+ return {handle,audit,periodOpen,available,reserved,submitCompany,setActor,inventoryCost};
 }
