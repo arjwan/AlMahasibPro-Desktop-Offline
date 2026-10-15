@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -145,6 +146,48 @@ const server=http.createServer((req,res)=>{
  if(!v.product_id||!Number.isSafeInteger(qty)||qty===0||!Number.isSafeInteger(warehouseId))inputError('بيانات حركة المخزن غير صحيحة');
  transaction(()=>inventory(String(v.product_id),warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية')));
  return send(res,201,{ok:true});
+ }
+ if(req.method==='GET'&&p==='/api/partners')return send(res,200,db.prepare('SELECT * FROM partners ORDER BY name').all());
+ if(req.method==='POST'&&p==='/api/partners'){
+ const v=readJSON(body),name=String(v.name||'').trim(),type=String(v.type||'customer');
+ if(!name||!['customer','supplier','both'].includes(type))inputError('اسم ونوع الطرف مطلوبان');
+ const id='party-'+crypto.randomUUID();
+ db.prepare('INSERT INTO partners(id,name,type,phone,email,address) VALUES(?,?,?,?,?,?)').run(id,name,type,String(v.phone||''),String(v.email||''),String(v.address||''));
+ return send(res,201,{id,name,type});
+ }
+ if(req.method==='GET'&&p==='/api/purchases')return send(res,200,db.prepare('SELECT p.*,v.name AS supplier FROM purchase_invoices p LEFT JOIN partners v ON v.id=p.partner_id ORDER BY p.id DESC LIMIT 200').all());
+ if(req.method==='POST'&&p==='/api/purchases'){
+ const v=readJSON(body),lines=v.lines,partnerId=String(v.partner_id||''),warehouseId=Number(v.warehouse_id||1),paid=Number(v.paid||0);
+ if(!Array.isArray(lines)||!lines.length||!Number.isSafeInteger(warehouseId)||warehouseId<=0||!Number.isSafeInteger(paid)||paid<0)inputError('بيانات فاتورة الشراء غير صحيحة');
+ const result=transaction(()=>{
+ const party=db.prepare('SELECT * FROM partners WHERE id=?').get(partnerId);
+ if(!party||!['supplier','both'].includes(party.type))inputError('اختر مورداً صحيحاً');
+ if(!db.prepare('SELECT id FROM warehouses WHERE id=?').get(warehouseId))inputError('المخزن غير موجود');
+ let net=0;const items=[];
+ for(const line of lines){
+ const product=db.prepare('SELECT * FROM products WHERE id=?').get(String(line.product_id||''));
+ const qty=Number(line.qty),cost=Number(line.cost);
+ if(!product||!Number.isSafeInteger(qty)||qty<=0||!Number.isSafeInteger(cost)||cost<0)inputError('المادة أو الكمية أو التكلفة غير صحيحة');
+ const total=qty*cost;if(!Number.isSafeInteger(total)||!Number.isSafeInteger(net+total))inputError('مبلغ الفاتورة كبير جداً');
+ net+=total;items.push({product,qty,cost,total});
+ }
+ if(paid>net)inputError('المدفوع أكبر من قيمة الفاتورة');
+ const now=new Date().toISOString(),date=now.slice(0,10);
+ const result=db.prepare('INSERT INTO purchase_invoices(invoice_no,partner_id,date,subtotal,discount,net,payment_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,partnerId,date,net,0,net,paid===net?'paid':paid?'partial':'unpaid',now);
+ const id=Number(result.lastInsertRowid),invoiceNo='P-'+String(id).padStart(6,'0');
+ db.prepare('UPDATE purchase_invoices SET invoice_no=? WHERE id=?').run(invoiceNo,id);
+ for(const item of items){
+ db.prepare('INSERT INTO purchase_items(invoice_id,product_id,qty,cost,line_total) VALUES(?,?,?,?,?)').run(id,item.product.id,item.qty,item.cost,item.total);
+ inventory(item.product.id,warehouseId,item.qty,'purchase',invoiceNo);
+ }
+ const entry=db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(date,'فاتورة شراء '+invoiceNo,invoiceNo,now);
+ const journalId=Number(entry.lastInsertRowid),add=db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)');
+ if(net)add.run(journalId,'102',net,0,invoiceNo);
+ if(paid)add.run(journalId,'101',0,paid,invoiceNo);
+ if(net-paid)add.run(journalId,'201',0,net-paid,invoiceNo);
+ return {id,invoice_no:invoiceNo,net,paid};
+ });
+ return send(res,201,result);
  }
  if(req.method==='GET'&&p==='/api/invoices')return send(res,200,db.prepare('SELECT * FROM sale_invoices ORDER BY id DESC LIMIT 200').all());
  if(req.method==='GET'&&p==='/api/held')return send(res,200,db.prepare("SELECT * FROM sale_invoices WHERE status='held' ORDER BY id DESC").all());
