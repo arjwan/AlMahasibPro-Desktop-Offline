@@ -85,6 +85,19 @@ document.getElementById('ws-add').onclick=async()=>{try{await apiRequest('/api/p
 body.querySelectorAll('.ws-adjust').forEach(b=>b.onclick=async()=>{const value=prompt('الكمية المضافة (+) أو المصروفة (-)');if(value===null)return;try{await apiRequest('/api/stock/adjust','POST',{product_id:b.dataset.id,delta:Number(value)});await show(page)}catch(e){alert(e.message)}});
 return;
 }
+if(page==='customers'||page==='suppliers'){
+const partners=await apiRequest('/api/partners'),kind=page==='customers'?'customer':'supplier';
+const selected=partners.filter(x=>x.type===kind||x.type==='both');
+body.innerHTML='<div class="panel"><h3>إضافة '+(kind==='customer'?'عميل':'مورد')+'</h3><div class="workspace-form">'+input('partyname','الاسم')+input('partyphone','رقم الهاتف')+input('partyaddress','العنوان')+'</div>'+btn('saveparty','حفظ البيانات')+'</div><div class="panel"><h3>السجل</h3>'+table(['الاسم','الهاتف','العنوان'],selected.map(x=>[htmlEscape(x.name),htmlEscape(x.phone||'—'),htmlEscape(x.address||'—')]))+'</div>';
+document.getElementById('ws-saveparty').onclick=async()=>{try{await apiRequest('/api/partners','POST',{name:document.getElementById('ws-partyname').value,phone:document.getElementById('ws-partyphone').value,address:document.getElementById('ws-partyaddress').value,type:kind});await show(page)}catch(e){alert(e.message)}};return;
+}
+if(page==='purchases'){
+const [partners,products,warehouses,purchases]=await Promise.all([apiRequest('/api/partners'),apiRequest('/api/products'),apiRequest('/api/warehouses'),apiRequest('/api/purchases')]);
+const suppliers=partners.filter(x=>x.type==='supplier'||x.type==='both');
+const options=(rows,label)=>rows.map(x=>'<option value="'+htmlEscape(x.id)+'">'+htmlEscape(label(x))+'</option>').join('');
+body.innerHTML='<div class="panel"><h3>فاتورة شراء جديدة</h3><p class="workspace-desc">تُرحّل الفاتورة مباشرة إلى المخزون والقيود المحاسبية المحلية.</p><div class="workspace-form"><label>المورد<select class="input" id="ws-supplier">'+options(suppliers,x=>x.name)+'</select></label><label>المخزن<select class="input" id="ws-warehouse">'+options(warehouses,x=>x.name)+'</select></label><label>المادة<select class="input" id="ws-product">'+options(products,x=>x.id+' — '+x.name)+'</select></label>'+input('qty','الكمية','number')+input('unitcost','تكلفة الوحدة','number')+input('paid','المدفوع','number')+'</div>'+btn('savepurchase','حفظ وترحيل الشراء')+'</div><div class="panel"><h3>فواتير المشتريات</h3>'+table(['الرقم','التاريخ','المورد','الصافي','حالة الدفع'],purchases.map(x=>[htmlEscape(x.invoice_no),htmlEscape(x.date),htmlEscape(x.supplier),fmt(x.net),htmlEscape(x.payment_status)]))+'</div>';
+document.getElementById('ws-savepurchase').onclick=async()=>{try{const qty=Number(document.getElementById('ws-qty').value),cost=Number(document.getElementById('ws-unitcost').value),paid=Number(document.getElementById('ws-paid').value||0);if(!Number.isSafeInteger(qty)||qty<=0||!Number.isSafeInteger(cost)||cost<0||!Number.isSafeInteger(paid)||paid<0)throw Error('تحقق من الكمية والتكلفة والمدفوع');if(!suppliers.length||!products.length||!warehouses.length)throw Error('أضف مورداً ومادة ومخزناً أولاً');if(!confirm('اعتماد فاتورة الشراء وترحيلها للمخزون والحسابات؟'))return;await apiRequest('/api/purchases','POST',{partner_id:document.getElementById('ws-supplier').value,warehouse_id:Number(document.getElementById('ws-warehouse').value),paid,lines:[{product_id:document.getElementById('ws-product').value,qty,cost}]});await show(page)}catch(e){alert(e.message)}};return;
+}
 if(page==='accounts'||page==='reports'){
 const [accounts,journal]=await Promise.all([apiRequest('/api/accounts'),apiRequest('/api/journal')]);
 const debit=accounts.reduce((n,x)=>n+Number(x.debit),0),credit=accounts.reduce((n,x)=>n+Number(x.credit),0);
