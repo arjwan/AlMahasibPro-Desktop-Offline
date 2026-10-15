@@ -17,7 +17,7 @@ try{
  await page.locator('#ws-desc').fill('قيد مراجعة الصفحتين');await page.locator('#ws-amount').fill('750');await page.locator('#ws-debit').selectOption('101');await page.locator('#ws-credit').selectOption('3');await page.locator('#ws-journal').click();
  await page.waitForFunction(()=>document.querySelector('.workspace-table')?.closest('#ws-body')?.textContent.includes('قيد مراجعة الصفحتين'));
  await page.locator('#erp-reverseid').selectOption({label:(await page.locator('#erp-reverseid option').allTextContents()).find(x=>x.includes('قيد مراجعة الصفحتين'))});await page.locator('#erp-form-reverse button').click();
- await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('عكس قيد'));
+ await page.waitForFunction(()=>[...document.querySelectorAll('.workspace-table')].some(x=>x.textContent.includes('عكس قيد')));
  await page.locator('#erp-assetname').fill('أصل مراجعة الصفحتين');await page.locator('#erp-assetcost').fill('12000');await page.locator('#erp-assetmonths').fill('12');await page.locator('#erp-form-asset button').click();
  await page.waitForFunction(()=>document.getElementById('ws-body')?.textContent.includes('أصل مراجعة الصفحتين'));
  await page.locator('#erp-form-depreciation button').click();
