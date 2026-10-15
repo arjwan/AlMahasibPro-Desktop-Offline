@@ -51,4 +51,68 @@ go=function(page){previousGo(page);if(page==='stock'){ $('placeholderTitle').tex
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));
 $('tiles').querySelectorAll('button').forEach(b=>b.onclick=()=>go(b.dataset.page));
 refreshLive();
-</script></html>
+</script>
+<style>
+.workspace-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:18px}.workspace-head h2{margin:0;font-size:23px}.workspace-desc{color:#5e7896;font-size:13px;margin:8px 0}.workspace-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:13px;margin:16px 0}.workspace-metric{background:linear-gradient(140deg,#f8fbff,#e4f1ff);border:1px solid #d5e6f7;border-radius:14px;padding:18px}.workspace-metric strong{display:block;font-size:21px;margin-top:10px;color:#0755a2}.workspace-table{width:100%;border-collapse:collapse;text-align:right}.workspace-table th{background:#e9f2ff;color:#123e6c}.workspace-table th,.workspace-table td{padding:13px;border-bottom:1px solid #e5edf7}.workspace-table tr:hover td{background:#f7fbff}.workspace-empty{padding:28px;text-align:center;color:#627d9b}.workspace-tag{display:inline-block;border-radius:25px;padding:5px 11px;background:#e8f1ff;color:#17528e;font-size:12px}.workspace-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px;margin:12px 0}.workspace-form label{font-size:12px;color:#486c8b;display:grid;gap:6px}.workspace-actions{display:flex;gap:8px;flex-wrap:wrap}.workspace-banner{padding:13px;border-radius:10px;background:#fff4dc;color:#76521b;margin:12px 0}.workspace-section{margin-top:16px}.workspace-filter{width:min(340px,100%)}
+</style>
+<script>
+(function(){
+const pages={
+stock:['📦','المخازن','المواد والأرصدة وحركات المخزون',['إضافة مادة','تسوية مخزون','سجل الحركات']],
+sales:['🧾','المبيعات','الفواتير المسجلة وحالات الدفع',['فاتورة جديدة','عرض الفواتير']],
+purchases:['🛍️','المشتريات','فواتير الموردين والاستلام',['فاتورة شراء','الموردون']],
+accounts:['📚','الحسابات العامة','دليل الحسابات والقيود وميزان المراجعة',['قيد يومية','ميزان المراجعة']],
+banks:['💳','الصندوق والبنوك','الحسابات النقدية والتسويات',['حركة الصندوق','مطابقة']],
+customers:['👥','العملاء','سجل العملاء والأرصدة',['إضافة عميل','كشف حساب']],
+suppliers:['🚚','الموردون','سجل الموردين والمستحقات',['إضافة مورد','كشف حساب']],
+reports:['📊','التقارير','تقارير المبيعات والمخزون والحسابات',['تقرير المبيعات','تقرير المخزون','ميزان المراجعة']],
+branches:['🏢','الفروع','إدارة مواقع العمل',['إضافة فرع']],
+agents:['👤','المندوبون','إدارة مندوبي المبيعات',['إضافة مندوب']],
+settings:['⚙️','الإعدادات','تخصيص بيانات المنشأة والبرنامج',['إعدادات الشركة','نسخ احتياطي']],
+devices:['🖥','الأجهزة والتراخيص','إدارة الأجهزة المرتبطة والتراخيص',['الأجهزة المرخصة']]
+};
+const htmlEscape=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=x=>Number(x||0).toLocaleString('en-US');
+const apiRequest=async(p,method='GET',payload)=>{const r=await fetch(p,{method,headers:{'Content-Type':'application/json'},body:payload?JSON.stringify(payload):undefined});const data=await r.json();if(!r.ok)throw Error(data.error||'تعذر تنفيذ الطلب');return data};
+const table=(cols,rows)=>'<div style="overflow-x:auto"><table class="workspace-table"><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'+(rows.length?rows.map(row=>'<tr>'+row.map(v=>'<td>'+v+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+cols.length+'" class="workspace-empty">لا توجد بيانات مسجلة حتى الآن</td></tr>')+'</tbody></table></div>';
+const input=(id,label,type='text')=>'<label>'+label+'<input class="input wide" id="ws-'+id+'" type="'+type+'"></label>';
+const btn=(id,label)=>'<button class="btn" id="ws-'+id+'">'+label+'</button>';
+async function show(page){
+if(!pages[page])return;
+const [emoji,title,description,actions]=pages[page],host=document.getElementById('placeholder');
+document.getElementById('title').textContent='المحاسب برو | '+title;
+host.innerHTML='<div class="workspace-head"><div><h2>'+emoji+' '+title+'</h2><p class="workspace-desc">'+description+'</p></div><span class="workspace-tag">Desktop Offline • SQLite</span></div><div id="ws-body">جار تحميل البيانات...</div>';
+const body=document.getElementById('ws-body');
+try{
+if(page==='stock'){
+const [items,moves]=await Promise.all([apiRequest('/api/products'),apiRequest('/api/stock/moves')]);
+body.innerHTML='<div class="workspace-grid"><div class="workspace-metric">عدد المواد<strong>'+items.length+'</strong></div><div class="workspace-metric">إجمالي الوحدات<strong>'+fmt(items.reduce((n,x)=>n+Number(x.stock||0),0))+'</strong></div><div class="workspace-metric">حركات مسجلة<strong>'+moves.length+'</strong></div></div><div class="panel"><h3>إضافة مادة جديدة</h3><div class="workspace-form">'+input('id','رمز المادة')+input('name','اسم المادة')+input('barcode','الباركود')+input('cost','التكلفة','number')+input('price','سعر البيع','number')+'</div>'+btn('add','حفظ المادة')+'</div><div class="panel"><h3>المواد والأرصدة</h3>'+table(['الرمز','المادة','الباركود','التكلفة','سعر البيع','الرصيد','العمليات'],items.map(x=>[htmlEscape(x.id),htmlEscape(x.name),htmlEscape(x.barcode||'—'),fmt(x.cost),fmt(x.price),fmt(x.stock),'<button class="btn light ws-adjust" data-id="'+htmlEscape(x.id)+'">تسوية</button>']))+'</div><div class="panel"><h3>آخر حركات المخزون</h3>'+table(['التاريخ','المادة','الحركة','الكمية','المرجع'],moves.map(x=>[htmlEscape(x.date),htmlEscape(x.product_name||x.product_id),htmlEscape(x.type),fmt(x.delta),htmlEscape(x.reference||'—')]))+'</div>';
+document.getElementById('ws-add').onclick=async()=>{try{await apiRequest('/api/products','POST',{id:document.getElementById('ws-id').value,name:document.getElementById('ws-name').value,barcode:document.getElementById('ws-barcode').value||null,cost:Number(document.getElementById('ws-cost').value),price:Number(document.getElementById('ws-price').value)});await show(page)}catch(e){alert(e.message)}};
+body.querySelectorAll('.ws-adjust').forEach(b=>b.onclick=async()=>{const value=prompt('الكمية المضافة (+) أو المصروفة (-)');if(value===null)return;try{await apiRequest('/api/stock/adjust','POST',{product_id:b.dataset.id,delta:Number(value)});await show(page)}catch(e){alert(e.message)}});
+return;
+}
+if(page==='accounts'||page==='reports'){
+const [accounts,journal]=await Promise.all([apiRequest('/api/accounts'),apiRequest('/api/journal')]);
+const debit=accounts.reduce((n,x)=>n+Number(x.debit),0),credit=accounts.reduce((n,x)=>n+Number(x.credit),0);
+body.innerHTML='<div class="workspace-grid"><div class="workspace-metric">إجمالي المدين<strong>'+fmt(debit)+'</strong></div><div class="workspace-metric">إجمالي الدائن<strong>'+fmt(credit)+'</strong></div><div class="workspace-metric">القيود<strong>'+journal.length+'</strong></div></div><div class="panel"><h3>دليل الحسابات وميزان المراجعة</h3>'+table(['الكود','اسم الحساب','النوع','مدين','دائن'],accounts.map(x=>[htmlEscape(x.code),htmlEscape(x.name),htmlEscape(x.type),fmt(x.debit),fmt(x.credit)]))+'</div><div class="panel"><h3>آخر القيود اليومية</h3>'+table(['الرقم','التاريخ','البيان','المدين','الدائن'],journal.map(x=>[fmt(x.id),htmlEscape(x.date),htmlEscape(x.description),fmt(x.debit),fmt(x.credit)]))+'</div>';
+if(page==='accounts'){
+const section=document.createElement('div');section.className='panel';section.innerHTML='<h3>إضافة قيد يومية متوازن</h3><div class="workspace-form">'+input('desc','بيان القيد')+input('amount','المبلغ','number')+'<label>الحساب المدين<select class="input" id="ws-debit">'+accounts.map(x=>'<option value="'+htmlEscape(x.id)+'">'+htmlEscape(x.code+' — '+x.name)+'</option>').join('')+'</select></label><label>الحساب الدائن<select class="input" id="ws-credit">'+accounts.map(x=>'<option value="'+htmlEscape(x.id)+'">'+htmlEscape(x.code+' — '+x.name)+'</option>').join('')+'</select></label></div>'+btn('journal','حفظ القيد');body.prepend(section);
+document.getElementById('ws-journal').onclick=async()=>{try{const amount=Number(document.getElementById('ws-amount').value),debitId=document.getElementById('ws-debit').value,creditId=document.getElementById('ws-credit').value;if(!Number.isSafeInteger(amount)||amount<=0||debitId===creditId)throw Error('حدد حسابين مختلفين ومبلغًا صحيحًا');await apiRequest('/api/journal','POST',{description:document.getElementById('ws-desc').value,lines:[{account_id:debitId,debit:amount,credit:0},{account_id:creditId,debit:0,credit:amount}]});await show(page)}catch(e){alert(e.message)}};
+}
+return;
+}
+if(page==='sales'){
+const invoices=await apiRequest('/api/invoices');
+body.innerHTML='<div class="workspace-actions">'+btn('newSale','فتح الكاشير')+'</div><div class="panel"><h3>سجل الفواتير</h3>'+table(['الرقم','التاريخ','الحالة','طريقة الدفع','الصافي'],invoices.map(x=>[htmlEscape(x.invoice_no),htmlEscape(x.date),htmlEscape(x.status),htmlEscape(x.payment_method),fmt(x.net)]))+'</div>';
+document.getElementById('ws-newSale').onclick=()=>window.go('pos');return;
+}
+body.innerHTML='<div class="workspace-grid">'+actions.map((x,i)=>'<div class="workspace-metric">'+htmlEscape(x)+'<strong>—</strong></div>').join('')+'</div><div class="panel"><h3>إجراءات '+title+'</h3><p class="workspace-banner">تم تجهيز تصميم القسم. العمليات الخلفية لهذا القسم لم تكتمل بعد، ولذلك تم تعطيل إدخال البيانات مؤقتًا لحمايتها.</p><div class="workspace-actions">'+actions.map(x=>'<button class="btn light" disabled>'+htmlEscape(x)+'</button>').join('')+'</div></div>';
+}catch(e){body.innerHTML='<div class="panel workspace-banner">تعذر تحميل بيانات القسم: '+htmlEscape(e.message)+'</div>'}
+}
+const previous=window.go;
+window.go=function(page){previous(page);if(pages[page])show(page)};
+document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>window.go(n.dataset.page));
+document.querySelectorAll('#tiles button').forEach(n=>n.onclick=()=>window.go(n.dataset.page));
+})();
+</script>
+</html>
