@@ -33,3 +33,11 @@ Source reference: arjwan307/AlMahasibPro, docs/ERP_CORE.md. Source repository is
 - Accounting endpoints currently allow basic balanced manual journal entries only.
 - Remaining modules are NOT implemented; do not represent UI placeholders as working features.
 - No merge to main or commercial release before migration, end-to-end posting, backup/restore, concurrency and security tests.
+
+## Verified development increment — 2026-10-15
+- Cash/bank workspace now supports receipt/payment vouchers and account ledger.
+- Sales and held-sale completion post revenue, payment/receivable and cost journals atomically with inventory.
+- Financial report displays posted revenue, expenses, profit, assets, liabilities and equity.
+- Fixed missing stock-update binding and repeated default warehouse creation on restart.
+- Integration test passed on Node 24 Linux: stock, sales, held completion once, purchase, balanced posting, voucher rollback and ledger balances. Windows UI verification remains outstanding.
+- Earlier sales are not automatically backfilled; costs use catalog cost, not a historical weighted-average valuation. Full enterprise parity, permissions, periods, returns, company sales editor, backups and LAN licensing remain incomplete.

@@ -94,12 +94,14 @@ const initData=()=>{
     units.run('kg','Kilogram','Kg');
 
     const warehouses=db.prepare('INSERT OR IGNORE INTO warehouses(name,location) VALUES(?,?)');
-    warehouses.run('Main Warehouse','Central');
+    if(!db.prepare('SELECT id FROM warehouses LIMIT 1').get())warehouses.run('Main Warehouse','Central');
 
     const accounts=db.prepare('INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,?,?)');
     accounts.run('1','1000','Assets','asset',null);
     accounts.run('101','1010','Cash','asset','1');
     accounts.run('102','1020','Inventory','asset','1');
+    accounts.run('103','1030','البنك','asset','1');
+    accounts.run('104','1040','ذمم العملاء','asset','1');
     accounts.run('2','2000','Liabilities','liability',null);
     accounts.run('201','2010','Suppliers','liability','2');
     accounts.run('3','3000','Equity','equity',null);
@@ -114,6 +116,22 @@ const initData=()=>{
 };
 initData();
 
+db.exec(`CREATE TABLE IF NOT EXISTS cash_vouchers(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('receipt','payment')), cash_account TEXT NOT NULL REFERENCES accounts(id), counterpart TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL CHECK(amount>0), description TEXT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), date TEXT NOT NULL)`);
+function postJournal(description,reference,lines){
+ const valid=lines.filter(x=>x[1]||x[2]);
+ const debit=valid.reduce((n,x)=>n+x[1],0),credit=valid.reduce((n,x)=>n+x[2],0);
+ if(!Number.isSafeInteger(debit)||debit!==credit)inputError('القيد غير متوازن');
+ if(!valid.length)return null;
+ const now=new Date().toISOString();
+ const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(now.slice(0,10),description,reference,now).lastInsertRowid);
+ for(const [account,d,c] of valid)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,account,d,c,description);
+ return id;
+}
+function postSale(invoiceId){
+ const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
+ const cost=db.prepare('SELECT COALESCE(SUM(i.qty*p.cost),0) AS total FROM sale_items i JOIN products p ON p.id=i.product_id WHERE i.invoice_id=?').get(invoiceId).total;
+ postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[sale.payment_method==='bank'?'103':sale.payment_method==='credit'?'104':'101',sale.net,0],['401',0,sale.net],['501',cost,0],['102',0,cost]]);
+}
 const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id GROUP BY p.id ORDER BY p.name').all();
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
@@ -121,7 +139,7 @@ function readJSON(body){try{return JSON.parse(body||'{}')}catch{inputError('بي
 function inventory(productId,warehouseId,delta,type,reference){
  const row=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(productId,warehouseId);
  if(!row)db.prepare('INSERT INTO product_warehouse(product_id,warehouse_id,stock) VALUES(?,?,0)').run(productId,warehouseId);
- const updated=db.prepare('UPDATE product_warehouse SET stock=stock+? WHERE product_id=? AND warehouse_id=? AND stock+?>=0').run(delta,productId,warehouseId);
+ const updated=db.prepare('UPDATE product_warehouse SET stock=stock+? WHERE product_id=? AND warehouse_id=? AND stock+?>=0').run(delta,productId,warehouseId,delta);
  if(!updated.changes)inputError('الرصيد المخزني غير كاف');
  db.prepare('INSERT INTO inventory_moves(product_id,warehouse_id,delta,type,reference,date,created_at) VALUES(?,?,?,?,?,?,?)').run(productId,warehouseId,delta,type,reference,new Date().toISOString().slice(0,10),new Date().toISOString());
 }
@@ -208,6 +226,7 @@ const server=http.createServer((req,res)=>{
  if(!product||!Number.isSafeInteger(qty)||qty<=0)inputError('مادة أو كمية غير صحيحة');
  const lineTotal=qty*product.price;
  if(!Number.isSafeInteger(lineTotal))inputError('القيمة كبيرة جدًا');
+ if(!Number.isSafeInteger(subtotal+lineTotal))inputError('القيمة كبيرة جدًا');
  subtotal+=lineTotal;prepared.push({product,qty,lineTotal});
  }
  if(discount>subtotal)inputError('الخصم أكبر من المجموع');
@@ -220,6 +239,7 @@ const server=http.createServer((req,res)=>{
  db.prepare('INSERT INTO sale_items(invoice_id,product_id,qty,price,line_total) VALUES(?,?,?,?,?)').run(id,line.product.id,line.qty,line.product.price,line.lineTotal);
  if(status==='paid')inventory(line.product.id,1,-line.qty,'sale','S-'+id);
  }
+ if(status==='paid')postSale(id);
  return {id,net,status,invoice_no:'S-'+String(id).padStart(6,'0')};
  });
  return send(res,201,result);
@@ -231,9 +251,33 @@ const server=http.createServer((req,res)=>{
  if(!invoice||invoice.status!=='held')inputError('الفاتورة ليست معلقة');
  for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id))inventory(item.product_id,1,-item.qty,'sale','S-'+id);
  db.prepare("UPDATE sale_invoices SET status='paid' WHERE id=?").run(id);
+ postSale(id);
  return {id,status:'paid'};
  });
  return send(res,200,result);
+ }
+ if(req.method==='GET'&&p==='/api/cash/vouchers')return send(res,200,db.prepare('SELECT v.*,a.name AS cash_name,b.name AS counterpart_name FROM cash_vouchers v JOIN accounts a ON a.id=v.cash_account JOIN accounts b ON b.id=v.counterpart ORDER BY v.id DESC').all());
+ if(req.method==='POST'&&p==='/api/cash/vouchers'){
+ const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart);
+ if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
+ const result=transaction(()=>{
+ if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(counterpart))inputError('الحساب المقابل غير موجود');
+ const incoming=v.kind==='receipt',description=String(v.description||'سند نقدي');
+ const entry=postJournal(description,'V-'+crypto.randomUUID(),[[cash,incoming?amount:0,incoming?0:amount],[counterpart,incoming?0:amount,incoming?amount:0]]);
+ const id=Number(db.prepare('INSERT INTO cash_vouchers(kind,cash_account,counterpart,amount,description,entry_id,date) VALUES(?,?,?,?,?,?,?)').run(v.kind,cash,counterpart,amount,description,entry,new Date().toISOString().slice(0,10)).lastInsertRowid);
+ return {id,entry_id:entry};
+ });return send(res,201,result);
+ }
+ if(req.method==='GET'&&p==='/api/ledger'){
+ const account=String(url.searchParams.get('account_id')||'');
+ if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(account))inputError('اختر الحساب');
+ const rows=db.prepare('SELECT e.id,e.date,e.description,e.reference,i.debit,i.credit FROM journal_items i JOIN journal_entries e ON e.id=i.entry_id WHERE i.account_id=? ORDER BY e.date,e.id,i.id').all(account);
+ let balance=0;return send(res,200,rows.map(row=>({...row,balance:balance+=row.debit-row.credit})));
+ }
+ if(req.method==='GET'&&p==='/api/reports/financial'){
+ const rows=db.prepare('SELECT a.type,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM accounts a LEFT JOIN journal_items i ON i.account_id=a.id GROUP BY a.type').all();
+ const net=type=>{const row=rows.find(x=>x.type===type);return row?row.debit-row.credit:0};
+ return send(res,200,{revenue:-net('revenue'),expenses:net('expense'),profit:-net('revenue')-net('expense'),assets:net('asset'),liabilities:-net('liability'),equity:-net('equity'),debit:rows.reduce((n,x)=>n+x.debit,0),credit:rows.reduce((n,x)=>n+x.credit,0)});
  }
  if(req.method==='GET'&&p==='/api/accounts')return send(res,200,db.prepare("SELECT a.id,a.code,a.name,a.type,a.parent_id,COALESCE(SUM(j.debit),0) AS debit,COALESCE(SUM(j.credit),0) AS credit FROM accounts a LEFT JOIN journal_items j ON j.account_id=a.id GROUP BY a.id ORDER BY a.code").all());
  if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
