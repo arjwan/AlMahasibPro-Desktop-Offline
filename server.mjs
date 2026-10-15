@@ -104,33 +104,94 @@ const initData=()=>{
 };
 initData();
 
-const all=()=>db.prepare('SELECT * FROM products ORDER by id').all();
+const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id GROUP BY p.id ORDER BY p.name').all();
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
-
+function inputError(message){const e=new Error(message);e.status=400;throw e}
+function readJSON(body){try{return JSON.parse(body||'{}')}catch{inputError('بيانات JSON غير صحيحة')}}
+function inventory(productId,warehouseId,delta,type,reference){
+ const row=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(productId,warehouseId);
+ if(!row)db.prepare('INSERT INTO product_warehouse(product_id,warehouse_id,stock) VALUES(?,?,0)').run(productId,warehouseId);
+ const updated=db.prepare('UPDATE product_warehouse SET stock=stock+? WHERE product_id=? AND warehouse_id=? AND stock+?>=0').run(delta,productId,warehouseId);
+ if(!updated.changes)inputError('الرصيد المخزني غير كاف');
+ db.prepare('INSERT INTO inventory_moves(product_id,warehouse_id,delta,type,reference,date,created_at) VALUES(?,?,?,?,?,?,?)').run(productId,warehouseId,delta,type,reference,new Date().toISOString().slice(0,10),new Date().toISOString());
+}
+function transaction(fn){db.exec('BEGIN IMMEDIATE');try{const result=fn();db.exec('COMMIT');return result}catch(e){db.exec('ROLLBACK');throw e}}
 const server=http.createServer((req,res)=>{
-    let body='';
-    req.on('data',chunk=>body+=chunk);
-    req.on('end',async()=>{
-        try{
-            const url=new URL(req.url,'http://localhost');
-            if(req.method==='GET'&&url.pathname==='/'){
-                res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});
-                res.end(fs.readFileSync(path.join(root,'index.html')));
-                return;
-            }
-            if(req.method==='GET'&&url.pathname==='/api/health'){
-                send(res,200,{status:'ok',version:'1.0.0'});
-                return;
-            }
-            if(req.method==='GET'&&url.pathname==='/api/products'){
-                send(res,200,all());
-                return;
-            }
-            // Rest of APIs will be implemented here...
-            send(res,404,{error:'Not Found'});
-        }catch(e){
-            send(res,500,{error:e.message});
-        }
-    })});
-const host=process.env.ALMAHASIB_HOST||'127.0.0.1';const port=Number(process.env.PORT||3765);server.listen(port,host,()=>console.log(`AlMahasibPro Desktop: http://${host}:${port} | DB: ${dbPath}`));
-
+ let body='';req.on('data',chunk=>{body+=chunk;if(body.length>1e6)req.destroy()});
+ req.on('end',()=>{
+ try{
+ const url=new URL(req.url,'http://localhost'),p=url.pathname;
+ if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
+ if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.4.0'});
+ if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
+ if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
+ if(req.method==='POST'&&p==='/api/products'){
+ const v=readJSON(body),id=String(v.id||'').trim(),name=String(v.name||'').trim(),price=Number(v.price),cost=Number(v.cost||0);
+ if(!id||!name||!Number.isSafeInteger(price)||price<0||!Number.isSafeInteger(cost)||cost<0)inputError('الرمز والاسم والسعر والتكلفة مطلوبة بصيغة صحيحة');
+ db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji) VALUES(?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦');
+ return send(res,201,{ok:true,id});
+ }
+ if(req.method==='POST'&&p==='/api/stock/adjust'){
+ const v=readJSON(body),qty=Number(v.delta),warehouseId=Number(v.warehouse_id||1);
+ if(!v.product_id||!Number.isSafeInteger(qty)||qty===0||!Number.isSafeInteger(warehouseId))inputError('بيانات حركة المخزن غير صحيحة');
+ transaction(()=>inventory(String(v.product_id),warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية')));
+ return send(res,201,{ok:true});
+ }
+ if(req.method==='GET'&&p==='/api/invoices')return send(res,200,db.prepare('SELECT * FROM sale_invoices ORDER BY id DESC LIMIT 200').all());
+ if(req.method==='GET'&&p==='/api/held')return send(res,200,db.prepare("SELECT * FROM sale_invoices WHERE status='held' ORDER BY id DESC").all());
+ const invoiceMatch=p.match(/^\\/api\\/invoices\\/(\\d+)$/);
+ if(req.method==='GET'&&invoiceMatch){
+ const invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(Number(invoiceMatch[1]));
+ if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
+ return send(res,200,{...invoice,lines:db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoice.id)});
+ }
+ if(req.method==='POST'&&p==='/api/invoices'){
+ const v=readJSON(body),lines=v.lines,status=v.status==='held'?'held':'paid',discount=Number(v.discount||0);
+ if(!Array.isArray(lines)||!lines.length||!Number.isSafeInteger(discount)||discount<0)inputError('الفاتورة غير صحيحة');
+ const result=transaction(()=>{
+ let subtotal=0;const prepared=[];
+ for(const line of lines){
+ const product=db.prepare('SELECT * FROM products WHERE id=?').get(String(line.id));
+ const qty=Number(line.qty);
+ if(!product||!Number.isSafeInteger(qty)||qty<=0)inputError('مادة أو كمية غير صحيحة');
+ const lineTotal=qty*product.price;
+ if(!Number.isSafeInteger(lineTotal))inputError('القيمة كبيرة جدًا');
+ subtotal+=lineTotal;prepared.push({product,qty,lineTotal});
+ }
+ if(discount>subtotal)inputError('الخصم أكبر من المجموع');
+ const now=new Date().toISOString(),net=subtotal-discount;
+ const payment=v.payment==='آجل'?'credit':v.payment==='بطاقة'?'bank':'cash';
+ const insert=db.prepare('INSERT INTO sale_invoices(invoice_no,date,subtotal,discount,net,payment_method,status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,now.slice(0,10),subtotal,discount,net,payment,status,now);
+ const id=Number(insert.lastInsertRowid);
+ db.prepare('UPDATE sale_invoices SET invoice_no=? WHERE id=?').run('S-'+String(id).padStart(6,'0'),id);
+ for(const line of prepared){
+ db.prepare('INSERT INTO sale_items(invoice_id,product_id,qty,price,line_total) VALUES(?,?,?,?,?)').run(id,line.product.id,line.qty,line.product.price,line.lineTotal);
+ if(status==='paid')inventory(line.product.id,1,-line.qty,'sale','S-'+id);
+ }
+ return {id,net,status,invoice_no:'S-'+String(id).padStart(6,'0')};
+ });
+ return send(res,201,result);
+ }
+ const complete=p.match(/^\\/api\\/held\\/(\\d+)\\/complete$/);
+ if(req.method==='POST'&&complete){
+ const result=transaction(()=>{
+ const id=Number(complete[1]),invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(id);
+ if(!invoice||invoice.status!=='held')inputError('الفاتورة ليست معلقة');
+ for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id))inventory(item.product_id,1,-item.qty,'sale','S-'+id);
+ db.prepare("UPDATE sale_invoices SET status='paid' WHERE id=?").run(id);
+ return {id,status:'paid'};
+ });
+ return send(res,200,result);
+ }
+ if(req.method==='GET'&&p==='/api/summary'){
+ const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(net),0) AS sales FROM sale_invoices WHERE status='paid'").get();
+ const today=db.prepare("SELECT COALESCE(SUM(net),0) AS total FROM sale_invoices WHERE status='paid' AND date=?").get(new Date().toISOString().slice(0,10));
+ const stock=db.prepare('SELECT COUNT(*) AS products,COALESCE(SUM(stock),0) AS units FROM product_warehouse').get();
+ return send(res,200,{...sales,todaySales:today.total,products:all().length,stockUnits:stock.units,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held'").get().n});
+ }
+ return send(res,404,{error:'المسار غير موجود'});
+ }catch(e){send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة':e.message})}
+ });
+});
+const host=process.env.ALMAHASIB_HOST||'127.0.0.1',port=Number(process.env.PORT||3765);
+server.listen(port,host,()=>console.log('AlMahasibPro Desktop: http://'+host+':'+port+' | DB: '+dbPath));
