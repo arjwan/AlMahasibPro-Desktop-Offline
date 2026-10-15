@@ -41,3 +41,5 @@ Source reference: arjwan307/AlMahasibPro, docs/ERP_CORE.md. Source repository is
 - Fixed missing stock-update binding and repeated default warehouse creation on restart.
 - Integration test passed on Node 24 Linux: stock, sales, held completion once, purchase, balanced posting, voucher rollback and ledger balances. Windows UI verification remains outstanding.
 - Earlier sales are not automatically backfilled; costs use catalog cost, not a historical weighted-average valuation. Full enterprise parity, permissions, periods, returns, company sales editor, backups and LAN licensing remain incomplete.
+
+- Company sales now has an independent multi-line editor, item code/barcode/name selection, customer, warehouse, payment, held save, posting and A4 print view. Held documents are not yet editable company drafts. Windows interaction checks remain outstanding.

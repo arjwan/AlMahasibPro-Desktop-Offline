@@ -77,6 +77,7 @@ function migrate(){
         db.exec('ALTER TABLE products ADD COLUMN '+column+' '+definition);
       }
     }
+    if(!columns('sale_invoices').has('warehouse_id'))db.exec('ALTER TABLE sale_invoices ADD COLUMN warehouse_id INTEGER NOT NULL DEFAULT 1');
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
@@ -216,7 +217,9 @@ const server=http.createServer((req,res)=>{
  return send(res,200,{...invoice,lines:db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoice.id)});
  }
  if(req.method==='POST'&&p==='/api/invoices'){
- const v=readJSON(body),lines=v.lines,status=v.status==='held'?'held':'paid',discount=Number(v.discount||0);
+ const v=readJSON(body),lines=v.lines,status=v.status==='held'?'held':'paid',discount=Number(v.discount||0),warehouseId=Number(v.warehouse_id||1);
+ if(!Number.isSafeInteger(warehouseId)||!db.prepare('SELECT id FROM warehouses WHERE id=?').get(warehouseId))inputError('المخزن غير موجود');
+ if(v.partner_id){const party=db.prepare('SELECT type FROM partners WHERE id=?').get(String(v.partner_id));if(!party||!['customer','both'].includes(party.type))inputError('اختر عميلاً صحيحاً');}
  if(!Array.isArray(lines)||!lines.length||!Number.isSafeInteger(discount)||discount<0)inputError('الفاتورة غير صحيحة');
  const result=transaction(()=>{
  let subtotal=0;const prepared=[];
@@ -234,10 +237,10 @@ const server=http.createServer((req,res)=>{
  const payment=v.payment==='آجل'?'credit':v.payment==='بطاقة'?'bank':'cash';
  const insert=db.prepare('INSERT INTO sale_invoices(invoice_no,date,subtotal,discount,net,payment_method,status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,now.slice(0,10),subtotal,discount,net,payment,status,now);
  const id=Number(insert.lastInsertRowid);
- db.prepare('UPDATE sale_invoices SET invoice_no=? WHERE id=?').run('S-'+String(id).padStart(6,'0'),id);
+ db.prepare('UPDATE sale_invoices SET invoice_no=?,warehouse_id=?,partner_id=? WHERE id=?').run('S-'+String(id).padStart(6,'0'),warehouseId,v.partner_id||null,id);
  for(const line of prepared){
  db.prepare('INSERT INTO sale_items(invoice_id,product_id,qty,price,line_total) VALUES(?,?,?,?,?)').run(id,line.product.id,line.qty,line.product.price,line.lineTotal);
- if(status==='paid')inventory(line.product.id,1,-line.qty,'sale','S-'+id);
+ if(status==='paid')inventory(line.product.id,warehouseId,-line.qty,'sale','S-'+id);
  }
  if(status==='paid')postSale(id);
  return {id,net,status,invoice_no:'S-'+String(id).padStart(6,'0')};
@@ -249,7 +252,7 @@ const server=http.createServer((req,res)=>{
  const result=transaction(()=>{
  const id=Number(complete[1]),invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(id);
  if(!invoice||invoice.status!=='held')inputError('الفاتورة ليست معلقة');
- for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id))inventory(item.product_id,1,-item.qty,'sale','S-'+id);
+ for(const item of db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(id))inventory(item.product_id,invoice.warehouse_id,-item.qty,'sale','S-'+id);
  db.prepare("UPDATE sale_invoices SET status='paid' WHERE id=?").run(id);
  postSale(id);
  return {id,status:'paid'};

@@ -8,4 +8,6 @@ let vouchers=await request('/api/cash/vouchers');assert.equal(vouchers.data.leng
 let invalid=await request('/api/cash/vouchers','POST',{kind:'receipt',cash_account:'101',counterpart:'missing',amount:100});assert.equal(invalid.status,400);
 vouchers=await request('/api/cash/vouchers');assert.equal(vouchers.data.length,2);
 financial=await request('/api/reports/financial');assert.equal(financial.data.profit,20750);assert.equal(financial.data.debit,financial.data.credit);
+let badWarehouse=await request('/api/invoices','POST',{...payload,warehouse_id:9999});assert.equal(badWarehouse.status,400);
+let badCustomer=await request('/api/invoices','POST',{...payload,partner_id:supplier.data.id});assert.equal(badCustomer.status,400);
 let summary=await request('/api/summary');assert.equal(summary.data.count,2);assert.equal(summary.data.sales,26750)}finally{child.kill();await new Promise(r=>setTimeout(r,500));try{rmSync(dir,{recursive:true,force:true})}catch(e){setTimeout(()=>rmSync(dir,{recursive:true,force:true}),1000)}}});
