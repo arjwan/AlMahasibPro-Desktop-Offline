@@ -1,45 +1,33 @@
-# AlMahasibPro Desktop Offline — functional parity contract
+# AlMahasibPro Desktop Offline — functional parity and evidence
 
-Source reference: arjwan307/AlMahasibPro, docs/ERP_CORE.md. Source repository is read-only for this effort.
+Reference: `arjwan307/AlMahasibPro/docs/ERP_CORE.md` and `ERP_MASTER_BLUEPRINT_AR.md` (read-only). Desktop work stays on `development/functional-desktop`; no changes to the cloud repository.
 
-## Product boundaries
-- Same business functionality as AlMahasibPro Enterprise, but a new desktop UI and separate POS.
-- SQLite is the local source of truth; no cloud connection required for normal operation.
-- Main company sales invoice must be distinct from POS; item code, barcode, customer, warehouse, payment, approval and A4 printing.
-- POS is a separate workflow with thermal printing.
-- Five-device LAN support requires a central local server, authentication, concurrency and license enforcement; not implemented merely by using SQLite.
+## Implemented in 0.4 development
 
-## Non-negotiable posting rules
-1. Check roles, fiscal period, party, item, warehouse and quantity.
-2. Compute totals and cost with explicit currency and approved exchange rate.
-3. Validate available stock before posting.
-4. In one SQLite transaction, persist immutable document, inventory movement, balanced general ledger journal, cash/receivable/payable settlement, and audit event.
-5. Use reversal or return documents instead of editing posted transactions.
-6. Never seed demo stock, create fake financial figures, or silently mutate production balances.
+- SQLite transactions post stock and balanced journals together. Idempotency keys protect supported transactional operations against identical retries and reject key/payload reuse.
+- Company sales: editable drafts, customer/agent/branch/warehouse and line prices, submission reservations, manager approval/rejection, full loading and immutable posting, A4 printing. POS remains separate and posts immediately; thermal layout retained.
+- Multi-line purchases, weighted cost rounded to whole IQD, cash/credit/mixed payment, partners and statements.
+- Warehouse and unit masters, per-warehouse stock, movements, transfers, dated reservations, stock counts and atomic CSV product import.
+- Partial sale/purchase returns with original quantity checks, discounted net allocation, historical sale-cost snapshot, transaction rollback and audit.
+- Accounts, manual balanced journals, reversal, ledger and trial balance; fiscal period locks; cash/bank vouchers, party settlement tags, bank reconciliation snapshots, shifts and variance journals.
+- Fixed assets with straight-line monthly depreciation, annual account budgets, financial/stock reports and CSV export.
+- Settings, hashed passwords, authenticated sessions, per-module server authorization, audit, branch/agent masters, backup download and validated restore on restart with prior-file preservation.
+- Five registered browser/device slots with admin revocation; centralized local server may bind to a LAN IP via environment. This is not cryptographic license activation.
 
-## Modules to port, in dependency order
-1. Company settings, users, permissions, audit and migrations.
-2. Chart of accounts, fiscal periods, journal, general ledger and trial balance.
-3. Parties, units, catalog and warehouse master data.
-4. Purchases, receipt, cost valuation, transfers, reservations and stocktaking.
-5. Company sales, discounts, invoices, receivables and returns.
-6. Cash, banks, vouchers, reconciliation and cash close.
-7. P&L, balance sheet, stock and customer/supplier statements.
-8. Offline POS, thermal print, A4 print, backups and local LAN licensing.
+## Verified locally on Node 24 / Linux
 
-## Current status
-- Navigation fix committed separately; needs Windows verification.
-- Existing stock adjustment and sales APIs are prototypes, not a full ERP posting engine.
-- Accounting endpoints currently allow basic balanced manual journal entries only.
-- Remaining modules are NOT implemented; do not represent UI placeholders as working features.
-- No merge to main or commercial release before migration, end-to-end posting, backup/restore, concurrency and security tests.
+- API integration covers posting/rollback, stock, transfers and reservations, company approval/load, POS held completion once, partial returns, weighted costs, idempotency, fiscal lock, reversal, cash/bank, asset depreciation, budgets, reconciliation, CSV rollback and stock count concurrency check.
+- Backup was downloaded, data changed, restore staged, server restarted, and restored data verified.
+- Migration from an old v2 product table missing barcode preserves the product, adds columns, starts twice, and does not duplicate the warehouse.
+- Permissions reject unauthenticated API calls and unauthorized stock/backup/users writes. Password changes survive restart. Five device slots and slot release were tested.
+- Chromium smoke opens 16 pages and performs actual UI product/supplier creation, multi-line purchase, company submission/approval/load, POS mixed item-entry methods/receipt, and cash voucher.
+- Windows CI config runs API, Electron, Chromium and EXE build. Its outcome must be read from GitHub Actions; it has not been inferred from Linux checks.
 
-## Verified development increment — 2026-10-15
-- Cash/bank workspace now supports receipt/payment vouchers and account ledger.
-- Sales and held-sale completion post revenue, payment/receivable and cost journals atomically with inventory.
-- Financial report displays posted revenue, expenses, profit, assets, liabilities and equity.
-- Fixed missing stock-update binding and repeated default warehouse creation on restart.
-- Integration test passed on Node 24 Linux: stock, sales, held completion once, purchase, balanced posting, voucher rollback and ledger balances. Windows UI verification remains outstanding.
-- Earlier sales are not automatically backfilled; costs use catalog cost, not a historical weighted-average valuation. Full enterprise parity, permissions, periods, returns, company sales editor, backups and LAN licensing remain incomplete.
+## Remaining limits — do not market as complete parity
 
-- Company sales now has an independent multi-line editor, item code/barcode/name selection, customer, warehouse, payment, held save, posting and A4 print view. Held documents are not yet editable company drafts. Windows interaction checks remain outstanding.
+- Real Windows device/thermal printer and five-device LAN testing; actual signed commercial activation.
+- Existing Android scanner requires trusted HTTPS; no HTTP workaround or scanner rebuild was introduced.
+- Multi-currency exchange-rate snapshots, native XLSX, fractional quantities and unit conversion, partial loading, accounting year-end closing entries, and complete source-module parity review.
+- Old posted sales have no historical cost snapshot; automatic financial backfill and their returns are intentionally blocked rather than guessed.
+- Inventory average uses rounded whole IQD cost, so report valuation can contain rounding differences from exact purchase totals. A full valuation reconciliation policy remains needed.
+- Restore is applied on restart. Protected SQLite snapshots are not a substitute for testing recovery on the customer's Windows machine.

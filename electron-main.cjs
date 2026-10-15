@@ -3,19 +3,20 @@ process.on('uncaughtException',(e)=>{
     try{
         const data=app ? app.getPath('userData') : (process.env.APPDATA ? path.join(process.env.APPDATA,'AlMahasibPro Offline') : 'C:\\\\temp\\\\electron-error.log');
         const logPath=path.join(data,'critical-error.log');
-        fs.appendFileSync(logPath,`[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${e.stack}\\n`, 'utf8');
+        fs.appendFileSync(logPath,`[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${e.stack}\n`, 'utf8');
     }catch(err){}
 });
+if(process.env.ALMAHASIB_USER_DATA)app.setPath('userData',process.env.ALMAHASIB_USER_DATA);
 app.whenReady().then(async()=>{
     const data=app.getPath('userData');
     fs.mkdirSync(data,{recursive:true});
     const logPath=path.join(data,'electron-startup.log');
-    const writeLog=(msg)=>fs.appendFileSync(logPath,`[${new Date().toISOString()}] ${msg}\\n`, 'utf8');
+    const writeLog=(msg)=>fs.appendFileSync(logPath,`[${new Date().toISOString()}] ${msg}\n`, 'utf8');
     
     writeLog('Electron starting... UserData: ' + data);
     
     const serverPath=path.join(__dirname,'server.mjs');
-    const port=3765;
+    const port=Number(process.env.PORT||3765);
     
     if(!fs.existsSync(serverPath)){
         writeLog(`CRITICAL: server.mjs NOT FOUND at ${serverPath}`);
@@ -39,14 +40,14 @@ app.whenReady().then(async()=>{
     let ready=false;
     for(let i=0;i<100;i++){
         try{
-            const r=await fetch(`http://127.0.0.1:${port}/api/products`);
+            const r=await fetch(`http://127.0.0.1:${port}/api/health`);
             if(r.ok){ready=true;break}
         }catch(e){}
         await new Promise(r=>setTimeout(r,100))
     }
 
     if(!ready){
-        const err=`لم يبدأ محرك قاعدة البيانات المحلية\\n\\nسجل الأخطاء: ${logPath}`;
+        const err=`لم يبدأ محرك قاعدة البيانات المحلية\n\nسجل الأخطاء: ${logPath}`;
         writeLog('Server failed to start in time');
         dialog.showErrorBox('تعذر التشغيل',err);
         app.quit();

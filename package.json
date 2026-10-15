@@ -1,13 +1,15 @@
 {
   "name": "al-mahasibpro-desktop-offline",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test tests/*.test.mjs",
     "desktop": "electron .",
-    "build:win": "npm test && electron-builder --win nsis --x64 --publish never"
+    "build:win": "npm test && electron-builder --win nsis --x64 --publish never",
+    "test:ui": "node tests/ui.smoke.mjs",
+    "test:electron": "node tests/electron.smoke.cjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -27,7 +29,10 @@
       "electron-main.cjs",
       "server.mjs",
       "index.html",
-      "package.json"
+      "package.json",
+      "erp.mjs",
+      "access.mjs",
+      "erp-ui.js"
     ],
     "asar": false,
     "win": {
