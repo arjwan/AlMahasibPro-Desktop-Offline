@@ -1,3 +1,4 @@
+const {waitForOwnServer}=require('./desktop-runtime.cjs');const crypto=require('node:crypto');
 const {app,BrowserWindow,dialog,ipcMain}=require('electron');const {spawn}=require('node:child_process');const path=require('node:path');const fs=require('node:fs');let server;let window;
 process.on('uncaughtException',(e)=>{
     try{
@@ -27,8 +28,9 @@ app.whenReady().then(async()=>{
 
     writeLog(`Spawning server at ${serverPath} on port ${port} with DB ${path.join(data,'company.sqlite')}`);
     
+    const instance=crypto.randomBytes(24).toString('hex');
     server=spawn(process.execPath,[serverPath],{
-        env:{...process.env,ELECTRON_RUN_AS_NODE:'1',ALMAHASIB_DB:path.join(data,'company.sqlite'),PORT:String(port),ALMAHASIB_HOST:'127.0.0.1'},
+        env:{...process.env,ELECTRON_RUN_AS_NODE:'1',ALMAHASIB_INSTANCE:instance,ALMAHASIB_DB:path.join(data,'company.sqlite'),PORT:String(port),ALMAHASIB_HOST:'127.0.0.1'},
         windowsHide:true
     });
 
@@ -37,17 +39,11 @@ app.whenReady().then(async()=>{
     server.on('error',(err)=>writeLog(`Server Spawn Error: ${err.message}`));
     server.on('exit',(code)=>writeLog(`Server exited with code: ${code}`));
 
-    let ready=false;
-    for(let i=0;i<100;i++){
-        try{
-            const r=await fetch(`http://127.0.0.1:${port}/api/health`);
-            if(r.ok){ready=true;break}
-        }catch(e){}
-        await new Promise(r=>setTimeout(r,100))
-    }
+    let ready=false,startupError='';
+    try{const health=await waitForOwnServer({child:server,url:`http://127.0.0.1:${port}/api/health`,instance});ready=true;writeLog('Verified own server build: '+health.build)}catch(e){startupError=e.message;writeLog('Readiness rejected: '+startupError)}
 
     if(!ready){
-        const err=`لم يبدأ محرك قاعدة البيانات المحلية\n\nسجل الأخطاء: ${logPath}`;
+        const err=`لم يبدأ محرك قاعدة البيانات المحلية\n${startupError}\n\nسجل الأخطاء: ${logPath}`;
         writeLog('Server failed to start in time');
         dialog.showErrorBox('تعذر التشغيل',err);
         app.quit();

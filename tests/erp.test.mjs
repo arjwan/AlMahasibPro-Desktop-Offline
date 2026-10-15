@@ -173,6 +173,7 @@ test('ERP: legacy journal without reference preserves balances and loads account
   for(const path of ['/api/accounts','/api/journal','/api/periods','/api/assets','/api/budgets','/api/reports/financial','/api/stock/balances','/api/ledger?account_id=101']){
    const result=await f.request(path);assert.equal(result.status,200,path+': '+JSON.stringify(result.data));
   }
+  const diagnostics=await f.request('/api/diagnostics/accounting');assert.equal(diagnostics.status,200);assert.equal(diagnostics.data.database,f.dbPath);assert.ok(diagnostics.data.journal_columns.includes('reference'));
   const journals=(await f.request('/api/journal')).data;
   assert.equal(journals.find(x=>x.id===entry.id).description,'رصيد قديم محفوظ');
   assert.equal(journals.find(x=>x.id===entry.id).debit,750);

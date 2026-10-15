@@ -9,6 +9,7 @@
     "desktop": "electron .",
     "build:win": "npm test && electron-builder --win nsis --x64 --publish never",
     "test:ui": "node tests/ui.smoke.mjs",
+    "repair:accounts": "node tools/repair-accounting.mjs",
     "test:electron": "node tests/electron.smoke.cjs"
   },
   "engines": {
@@ -28,6 +29,8 @@
     "files": [
       "electron-main.cjs",
       "server.mjs",
+      "desktop-runtime.cjs",
+      "accounting-schema.mjs",
       "stock.mjs",
       "stock-ui.js",
       "supplier-reports.mjs",

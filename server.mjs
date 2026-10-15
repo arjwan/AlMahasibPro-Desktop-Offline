@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {ensureJournalReference} from './accounting-schema.mjs';
 import {stockERP} from './stock.mjs';
 import {supplierReports} from './supplier-reports.mjs';
 import {extendERP} from './erp.mjs';
@@ -40,7 +41,7 @@ function migrate(){
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
     const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
     const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
-    if(schemaChange&&fs.statSync(dbPath).size>0)fs.copyFileSync(dbPath,backupPath);
+    if(schemaChange&&fs.statSync(dbPath).size>0)db.prepare('VACUUM INTO ?').run(backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
         db.exec(`
@@ -98,7 +99,7 @@ function migrate(){
     // Reconcile before ERP queries use it; preserve amounts and never invent references.
     if(!columns('journal_entries').has('reference')){
       log('Adding missing journal_entries column: reference');
-      db.exec('ALTER TABLE journal_entries ADD COLUMN reference TEXT');
+      ensureJournalReference(db);
     }
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
@@ -106,6 +107,9 @@ function migrate(){
     if(currentVersion<2)db.exec('PRAGMA user_version=2');
 }
 migrate();
+// Verify the same query used by the accounts page before declaring readiness.
+db.prepare('SELECT e.reference FROM journal_entries e LIMIT 0').all();
+const runtimeBuild=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'server.mjs'))).update(fs.readFileSync(path.join(root,'erp.mjs'))).digest('hex').slice(0,16);
 
 // Initial Data for Testing
 const initData=()=>{
@@ -226,7 +230,11 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
  if(req.method==='GET'&&p==='/scanner-qrcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'scanner-qrcode.js')));return}
  if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<html dir="rtl"><meta charset="utf-8"><h2>ربط ماسح المحاسب برو</h2><p>افتح تطبيق الماسح الحالي وامسح رمز الربط في شاشة الكاشير.</p></html>');return}
- if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.5.0'});
+ if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.5.0',instance:process.env.ALMAHASIB_INSTANCE||null,build:runtimeBuild,accounting_schema_ok:true});
+ if(req.method==='GET'&&p==='/api/diagnostics/accounting'){
+ if(req.user.role!=='admin')return send(res,403,{error:'التشخيص للمدير فقط'});
+ return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true});
+ }
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
  if(req.method==='POST'&&p==='/api/products'){
