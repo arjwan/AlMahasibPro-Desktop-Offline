@@ -71,6 +71,7 @@ document.getElementById('title').textContent='المحاسب برو | '+title;
 host.innerHTML='<div class="workspace-head"><div><h2>'+emoji+' '+title+'</h2><p class="workspace-desc">'+description+'</p></div><span class="workspace-tag">Desktop Offline • SQLite</span></div><div id="ws-body">جار تحميل البيانات...</div>';
 const body=document.getElementById('ws-body');
 try{
+if(page==='stock'&&window.renderStockPage){await window.renderStockPage(body);return;}
 if(window.renderERPPage&&await window.renderERPPage(page,body))return;
 if(page==='stock'){
 const [items,moves]=await Promise.all([apiRequest('/api/products'),apiRequest('/api/stock/moves')]);
@@ -140,6 +141,7 @@ document.querySelectorAll('#tiles button').forEach(n=>n.onclick=()=>window.go(n.
 </script>
 </html>
 
+<script src="/jsbarcode.js"></script><script src="/stock-ui.js"></script>
 <script src="/erp-ui.js"></script>
 <style>[hidden]{display:none!important}</style>
 

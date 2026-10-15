@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {stockERP} from './stock.mjs';
 import {supplierReports} from './supplier-reports.mjs';
 import {extendERP} from './erp.mjs';
 import {scannerERP} from './scanner.mjs';
@@ -162,6 +163,7 @@ const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM pr
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
 function readJSON(body){try{const value=JSON.parse(body||'{}');if(!value||Array.isArray(value)||typeof value!=='object')inputError('بيانات JSON غير صحيحة');return value}catch{inputError('بيانات JSON غير صحيحة')}}
+let stockERPService=null;
 function inventory(productId,warehouseId,delta,type,reference,carryingValue=null){
  erp.periodOpen();
  if(delta<0&&erp.available(productId,warehouseId)<-delta)inputError('الرصيد المتاح غير كاف أو محجوز');
@@ -170,6 +172,7 @@ function inventory(productId,warehouseId,delta,type,reference,carryingValue=null
  const row=db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(productId,warehouseId);
  if(!row)db.prepare('INSERT INTO product_warehouse(product_id,warehouse_id,stock) VALUES(?,?,0)').run(productId,warehouseId);
  const before=row?.stock||0;if(!Number.isSafeInteger(before+delta))inputError('الرصيد كبير جداً');
+ const batchChanges=stockERPService?.beforeMove(productId,warehouseId,delta,type,reference);
  const updated=db.prepare('UPDATE product_warehouse SET stock=stock+? WHERE product_id=? AND warehouse_id=? AND stock+?>=0').run(delta,productId,warehouseId,delta);
  if(!updated.changes)inputError('الرصيد المخزني غير كاف');
  if(type!=='transfer'){
@@ -178,7 +181,8 @@ function inventory(productId,warehouseId,delta,type,reference,carryingValue=null
  const qty=db.prepare('SELECT COALESCE(SUM(stock),0) AS n FROM product_warehouse WHERE product_id=?').get(productId).n;
  db.prepare('UPDATE products SET book_value=?,cost=CASE WHEN ?>0 THEN ? ELSE cost END WHERE id=?').run(book,qty,qty?Math.round(book/qty):0,productId);
  }
- db.prepare('INSERT INTO inventory_moves(product_id,warehouse_id,delta,type,reference,date,created_at) VALUES(?,?,?,?,?,?,?)').run(productId,warehouseId,delta,type,reference,new Date().toISOString().slice(0,10),new Date().toISOString());
+ const movement=db.prepare('INSERT INTO inventory_moves(product_id,warehouse_id,delta,type,reference,date,created_at) VALUES(?,?,?,?,?,?,?)').run(productId,warehouseId,delta,type,reference,new Date().toISOString().slice(0,10),new Date().toISOString());
+ if(batchChanges)stockERPService.afterMove(Number(movement.lastInsertRowid),batchChanges);
 }
 let operation=null;
 function transaction(fn){db.exec('BEGIN IMMEDIATE');try{
@@ -192,6 +196,7 @@ const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJ
 const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});db.exec('PRAGMA user_version=6');
 const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
 const handleSupplier=supplierReports({db,inputError,send});
+stockERPService=stockERP({db,inputError,inventory,erp,transaction,postJournal,send,readJSON});
 const handler=(req,res)=>{
  let body='';req.on('data',chunk=>{body+=chunk;if(body.length>42e6)req.destroy()});
  req.on('end',()=>{
@@ -209,12 +214,15 @@ const handler=(req,res)=>{
  if(cached){if(cached.route!==route||cached.payload!==payload)inputError('معرف العملية مستخدم لطلب مختلف');return send(res,200,JSON.parse(cached.result))}
  operation={key,route,payload};
  }
+ if(stockERPService.handle(req,res,p,body,url))return;
  if(handleSupplier(req,res,p,url))return;
  if(scanner.handle(req,res,p,body))return;
  if(currency.handle(req,res,p,body))return;
  if(erp.handle(req,res,p,body,url))return;
  if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
  if(req.method==='GET'&&p==='/erp-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'erp-ui.js')));return}
+ if(req.method==='GET'&&p==='/stock-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'stock-ui.js')));return}
+ if(req.method==='GET'&&p==='/jsbarcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'node_modules/jsbarcode/dist/JsBarcode.all.min.js')));return}
  if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
  if(req.method==='GET'&&p==='/scanner-qrcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'scanner-qrcode.js')));return}
  if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<html dir="rtl"><meta charset="utf-8"><h2>ربط ماسح المحاسب برو</h2><p>افتح تطبيق الماسح الحالي وامسح رمز الربط في شاشة الكاشير.</p></html>');return}
@@ -225,6 +233,7 @@ const handler=(req,res)=>{
  const v=readJSON(body),id=String(v.id||'').trim(),name=String(v.name||'').trim(),price=Number(v.price),cost=Number(v.cost||0);
  if(!id||!name||!Number.isSafeInteger(price)||price<0||!Number.isSafeInteger(cost)||cost<0)inputError('الرمز والاسم والسعر والتكلفة مطلوبة بصيغة صحيحة');
  if(!Number.isSafeInteger(Number(v.min_stock||0))||Number(v.min_stock||0)<0)inputError('حد الرصيد غير صحيح');
+ if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,String(v.barcode||'')))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
  if(v.unit_id&&!db.prepare('SELECT id FROM units WHERE id=?').get(String(v.unit_id)))inputError('الوحدة غير موجودة');
  db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null);
  return send(res,201,{ok:true,id});

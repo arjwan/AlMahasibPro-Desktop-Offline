@@ -28,6 +28,8 @@
     "files": [
       "electron-main.cjs",
       "server.mjs",
+      "stock.mjs",
+      "stock-ui.js",
       "supplier-reports.mjs",
       "desktop-preload.cjs",
       "index.html",
@@ -53,5 +55,8 @@
       "createDesktopShortcut": true
     },
     "artifactName": "AlMahasibPro-Offline-Setup-${version}-${arch}.${ext}"
+  },
+  "dependencies": {
+    "jsbarcode": "^3.12.3"
   }
 }
