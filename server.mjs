@@ -185,6 +185,28 @@ const server=http.createServer((req,res)=>{
  });
  return send(res,200,result);
  }
+ if(req.method==='GET'&&p==='/api/accounts')return send(res,200,db.prepare("SELECT a.id,a.code,a.name,a.type,a.parent_id,COALESCE(SUM(j.debit),0) AS debit,COALESCE(SUM(j.credit),0) AS credit FROM accounts a LEFT JOIN journal_items j ON j.account_id=a.id GROUP BY a.id ORDER BY a.code").all());
+ if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
+ if(req.method==='POST'&&p==='/api/journal'){
+ const v=readJSON(body),lines=v.lines;
+ if(!Array.isArray(lines)||lines.length<2)inputError('القيد يحتاج سطرين على الأقل');
+ const result=transaction(()=>{
+ let debit=0,credit=0;
+ for(const line of lines){
+ const d=Number(line.debit||0),c=Number(line.credit||0);
+ if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(String(line.account_id))||!Number.isSafeInteger(d)||!Number.isSafeInteger(c)||d<0||c<0||(d>0&&c>0)||(d===0&&c===0))inputError('سطر قيد غير صحيح');
+ debit+=d;credit+=c;
+ }
+ if(debit!==credit||debit<=0||!Number.isSafeInteger(debit))inputError('القيد غير متوازن');
+ const now=new Date().toISOString(),date=String(v.date||now.slice(0,10));
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date))inputError('تاريخ غير صحيح');
+ const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(date,String(v.description||''),String(v.reference||''),now).lastInsertRowid);
+ for(const line of lines)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,String(line.account_id),Number(line.debit||0),Number(line.credit||0),String(line.memo||''));
+ return {id,debit,credit};
+ });
+ return send(res,201,result);
+ }
+ if(req.method==='GET'&&p==='/api/stock/moves')return send(res,200,db.prepare('SELECT m.*,p.name AS product_name,w.name AS warehouse_name FROM inventory_moves m LEFT JOIN products p ON p.id=m.product_id LEFT JOIN warehouses w ON w.id=m.warehouse_id ORDER BY m.id DESC LIMIT 200').all());
  if(req.method==='GET'&&p==='/api/summary'){
  const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(net),0) AS sales FROM sale_invoices WHERE status='paid'").get();
  const today=db.prepare("SELECT COALESCE(SUM(net),0) AS total FROM sale_invoices WHERE status='paid' AND date=?").get(new Date().toISOString().slice(0,10));
