@@ -15,7 +15,7 @@ export function createAccess({db,send,readJSON,inputError,audit}){
   if(p==='/'||p==='/api/health')return false;
   if(!p.startsWith('/api/'))return false;
   // A local browser application must not accept mutations initiated by a different website.
-  if(req.method!=='GET'&&req.headers.origin&&req.headers.origin!=='http://'+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
+  if(req.method!=='GET'&&req.headers.origin&&req.headers.origin!==(req.socket.encrypted?'https://':'http://')+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
   if(req.method==='POST'&&p==='/api/auth/login'){
    const v=readJSON(body),ip=req.socket.remoteAddress,attempt=failures.get(ip);if(attempt&&attempt.until>Date.now()&&attempt.count>=20){send(res,429,{error:'محاولات كثيرة؛ حاول بعد 15 دقيقة'});return true}
    const user=db.prepare('SELECT * FROM users WHERE username=?').get(String(v.username||''));
@@ -30,7 +30,7 @@ export function createAccess({db,send,readJSON,inputError,audit}){
    res.setHeader('Set-Cookie',['alma_session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800','alma_device='+device+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000']);audit('login',user.id);send(res,200,{id:user.id,username:user.username,full_name:user.full_name,role:user.role,modules:grants(user)});return true;
   }
   const user=userFor(req);if(!user){send(res,401,{error:'يرجى تسجيل الدخول'});return true}
-  req.user=user;
+  req.user=user;req.sessionId=cookie(req);
   if(req.method==='GET'&&p==='/api/auth/me'){send(res,200,{...user,modules:grants(user)});return true}
   if(req.method==='POST'&&p==='/api/auth/logout'){sessions.delete(cookie(req));res.setHeader('Set-Cookie','alma_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');send(res,200,{ok:true});return true}
   if(req.method==='POST'&&p==='/api/auth/password'){
@@ -48,8 +48,8 @@ export function createAccess({db,send,readJSON,inputError,audit}){
    }
   }
   // Read-only lookup access is needed for invoice editors; writes remain module-specific.
-  const lookup=req.method==='GET'&&['/api/products','/api/warehouses','/api/units','/api/partners','/api/summary','/api/agents','/api/branches'].includes(p);
-  const module=p.startsWith('/api/company-sales')?(p.endsWith('/load')?'stock':'sales'):p.startsWith('/api/returns')?(req.method==='POST'?(readJSON(body).kind==='sale'?'sales':'purchases'):'reports'):p.startsWith('/api/invoices')||p.startsWith('/api/held')||p.startsWith('/api/shifts')?'sales':p.startsWith('/api/purchases')?'purchases':p.startsWith('/api/stock')||p.startsWith('/api/products')||p.startsWith('/api/warehouses')||p.startsWith('/api/units')||p.startsWith('/api/reservations')?'stock':p.startsWith('/api/assets')||p.startsWith('/api/budgets')||p.startsWith('/api/accounts')||p.startsWith('/api/journal')||p.startsWith('/api/periods')||p.startsWith('/api/ledger')?'accounts':p.startsWith('/api/cash')||p.startsWith('/api/bank/')?'banks':p.startsWith('/api/partners')?'partners':p.startsWith('/api/reports')?'reports':p.startsWith('/api/branches')?'branches':p.startsWith('/api/agents')?'agents':'settings';
+  const lookup=req.method==='GET'&&['/api/products','/api/warehouses','/api/units','/api/partners','/api/currency','/api/summary','/api/agents','/api/branches'].includes(p);
+  const module=p==='/api/scanner/config'?'settings':p.startsWith('/api/v1/market/scanner')?'sales':p==='/api/currency/rate'?'settings':p.startsWith('/api/currency/vouchers')?'banks':p.startsWith('/api/currency')?(req.method==='GET'?'reports':'sales'):p.startsWith('/api/company-sales')?(p.endsWith('/load')?'stock':'sales'):p.startsWith('/api/returns')?(req.method==='POST'?(readJSON(body).kind==='sale'?'sales':'purchases'):'reports'):p.startsWith('/api/invoices')||p.startsWith('/api/held')||p.startsWith('/api/shifts')?'sales':p.startsWith('/api/purchases')?'purchases':p.startsWith('/api/stock')||p.startsWith('/api/products')||p.startsWith('/api/warehouses')||p.startsWith('/api/units')||p.startsWith('/api/reservations')?'stock':p.startsWith('/api/assets')||p.startsWith('/api/budgets')||p.startsWith('/api/accounts')||p.startsWith('/api/journal')||p.startsWith('/api/periods')||p.startsWith('/api/ledger')?'accounts':p.startsWith('/api/cash')||p.startsWith('/api/bank/')?'banks':p.startsWith('/api/partners')?'partners':p.startsWith('/api/reports')?'reports':p.startsWith('/api/branches')?'branches':p.startsWith('/api/agents')?'agents':'settings';
   const allowed=grants(user);const sharedRead=req.method==='GET'&&((['/api/accounts','/api/journal','/api/stock/balances'].includes(p)&&allowed.includes('reports'))||((p==='/api/accounts'||p==='/api/ledger')&&allowed.includes('banks'))||(p==='/api/returns'&&allowed.some(x=>['sales','purchases'].includes(x)))||(p.startsWith('/api/invoices')&&allowed.includes('stock')));if(!lookup&&!sharedRead&&!allowed.includes(module)){send(res,403,{error:'لا تملك صلاحية هذا القسم'});return true}
   if(p==='/api/returns'&&req.method==='POST'){
    const kind=readJSON(body).kind;if(!allowed.includes(kind==='sale'?'sales':'purchases')){send(res,403,{error:'لا تملك صلاحية المرتجع'});return true}

@@ -1,7 +1,9 @@
+import https from 'node:https';
+import net from 'node:net';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -111,5 +113,49 @@ test('ERP: carrying value and discounted returns preserve rounding remainders ex
  await created(f,'/api/returns',{kind:'sale',invoice_id:sale.id,cash_refund:200,reason:'الباقي',lines:[{item_id:detail.lines[1].id,qty:2}]});
  balance=(await f.request('/api/stock/balances')).data[0];assert.equal(balance.value,31);assert.equal(balance.stock,3);
  const accounts=(await f.request('/api/accounts')).data,stockAccount=accounts.find(x=>x.id==='102');assert.equal(stockAccount.debit-stockAccount.credit,31);const financial=(await f.request('/api/reports/financial')).data;assert.equal(financial.profit,0);assert.equal(financial.debit,financial.credit);
+ }finally{await f.cleanup()}
+});
+
+test('ERP: partial shipping reserves remainder, allocates payment exactly, supports returns and rejects repeats',async()=>{
+ const f=await fixture();try{await f.login();const customer=await created(f,'/api/partners',{name:'عميل الدفعات',type:'customer'});await created(f,'/api/products',{id:'PART',name:'دفعات',cost:33,price:101});await created(f,'/api/stock/adjust',{product_id:'PART',delta:6});
+ const invoice=await created(f,'/api/invoices',{source:'company',partner_id:customer.id,paid:301,discount:1,lines:[{id:'PART',qty:6}]});await f.request('/api/company-sales/'+invoice.id+'/approve','POST',{});let detail=(await f.request('/api/invoices/'+invoice.id)).data;const item=detail.lines[0].id;
+ const body={expected_version:0,lines:[{item_id:item,qty:2}]},key={'Idempotency-Key':'ship-once'};let shipped=await f.request('/api/company-sales/'+invoice.id+'/load','POST',body,key);assert.equal(shipped.status,200);assert.equal(shipped.data.net,201);assert.equal(shipped.data.paid,100);assert.equal(shipped.data.complete,false);
+ assert.equal((await f.request('/api/company-sales/'+invoice.id+'/load','POST',body,key)).status,200);assert.equal((await f.request('/api/company-sales/'+invoice.id+'/load','POST',body)).status,400);
+ let stock=(await f.request('/api/products')).data[0];assert.equal(stock.stock,4);assert.equal(stock.available,0);assert.equal((await f.request('/api/summary')).data.sales,201);
+ assert.equal((await f.request('/api/held/'+invoice.id+'/cancel','POST',{})).status,400);assert.equal((await f.request('/api/returns','POST',{kind:'sale',invoice_id:invoice.id,reason:'غير محمل',cash_refund:0,lines:[{item_id:item,qty:3}]})).status,400);
+ await created(f,'/api/returns',{kind:'sale',invoice_id:invoice.id,reason:'مرتجع من دفعة محملة',cash_refund:0,lines:[{item_id:item,qty:1}]});
+ let remaining=await f.request('/api/company-sales/'+invoice.id+'/load','POST',{expected_version:1,lines:[{item_id:item,qty:1}]});assert.equal(remaining.data.net,101);assert.equal(remaining.data.paid,50);
+ remaining=await f.request('/api/company-sales/'+invoice.id+'/load','POST',{expected_version:2});assert.equal(remaining.data.complete,true);detail=(await f.request('/api/invoices/'+invoice.id)).data;assert.equal(detail.shipments.length,3);assert.equal(detail.shipments.reduce((n,x)=>n+x.net,0),605);assert.equal(detail.shipments.reduce((n,x)=>n+x.paid,0),301);assert.equal(detail.lines[0].loaded_qty,6);
+ assert.equal((await f.request('/api/partners/statement?id='+customer.id)).data.at(-1).balance,204);const accounts=(await f.request('/api/accounts')).data;assert.equal(accounts.find(x=>x.id==='401').credit,605);assert.equal(accounts.find(x=>x.id==='401').debit,100);assert.equal((await f.request('/api/summary')).data.sales,605);
+ }finally{await f.cleanup()}
+});
+
+test('ERP: closing transfers profit once, reopening reverses closing and period profit remains readable',async()=>{
+ const f=await fixture();try{await f.login();const day=new Date().toISOString().slice(0,10);await created(f,'/api/journal',{lines:[{account_id:'101',debit:1000},{account_id:'401',credit:1000}]});await created(f,'/api/journal',{lines:[{account_id:'501',debit:300},{account_id:'101',credit:300}]});const period=await created(f,'/api/periods',{name:'إقفال',start:day,end:day});const close=await f.request('/api/periods/'+period.id+'/close','POST',{});assert.equal(close.status,200);assert.equal(close.data.profit,700);
+ let accounts=(await f.request('/api/accounts')).data;assert.equal(accounts.find(x=>x.id==='401').debit,accounts.find(x=>x.id==='401').credit);assert.equal(accounts.find(x=>x.id==='301').credit,700);assert.equal((await f.request('/api/reports/period-profit?period_id='+period.id)).data.profit,700);assert.equal((await f.request('/api/periods/'+period.id+'/close','POST',{})).status,400);
+ assert.equal((await f.request('/api/periods/'+period.id+'/reopen','POST',{})).status,200);accounts=(await f.request('/api/accounts')).data;assert.equal(accounts.find(x=>x.id==='401').credit-accounts.find(x=>x.id==='401').debit,1000);assert.equal(accounts.find(x=>x.id==='301').credit-accounts.find(x=>x.id==='301').debit,0);assert.equal((await f.request('/api/reports/period-profit?period_id='+period.id)).data.profit,700);
+ }finally{await f.cleanup()}
+});
+
+test('ERP: USD invoice snapshots and physical cash realize exchange differences without changing old rates',async()=>{
+ const f=await fixture();try{await f.login();const supplier=await created(f,'/api/partners',{name:'مورد دولار',type:'supplier'});await created(f,'/api/products',{id:'USD',name:'دولار',price:2000,cost:0});assert.equal((await f.request('/api/purchases','POST',{currency:'USD',partner_id:supplier.id,lines:[{product_id:'USD',qty:2,cost:'1.25'}]})).status,400);
+ await created(f,'/api/currency/rate',{rate:'1310'});const invoice=await created(f,'/api/purchases',{currency:'USD',exchange_rate:'1310',partner_id:supplier.id,paid:0,lines:[{product_id:'USD',qty:2,cost:'1.25'}]});assert.equal(invoice.net,3275);let detail=(await f.request('/api/purchases/'+invoice.id)).data;assert.equal(detail.currency,'USD');assert.equal(detail.exchange_rate,'1310');assert.equal(JSON.parse(detail.foreign_snapshot).lines[0].cost,'1.25');
+ await created(f,'/api/currency/vouchers',{kind:'receipt',account_id:'107',counterpart:'3',amount:'100.00',rate:'1310'});await created(f,'/api/currency/rate',{rate:'1320'});const payment=await created(f,'/api/currency/vouchers',{kind:'payment',account_id:'107',counterpart:'501',amount:'50.00',rate:'1320'});assert.equal(payment.base_amount,66000);assert.equal(payment.carrying,65500);assert.equal(payment.exchange_difference,500);const tiny=await created(f,'/api/purchases',{currency:'USD',exchange_rate:'1320',partner_id:supplier.id,paid:0,lines:[{product_id:'USD',qty:1,cost:'0.03'},{product_id:'USD',qty:1,cost:'0.03'},{product_id:'USD',qty:1,cost:'0.03'}]});assert.equal(tiny.net,119);const balances=(await f.request('/api/currency')).data.balances;assert.equal(balances[0].foreign_cents,5000);assert.equal(balances[0].base_value,65500);
+ detail=(await f.request('/api/purchases/'+invoice.id)).data;assert.equal(detail.exchange_rate,'1310');assert.equal((await f.request('/api/currency/vouchers','POST',{kind:'payment',account_id:'107',counterpart:'501',amount:'100.00'})).status,400);assert.equal((await f.request('/api/currency/quote','POST',{amount:'1.00',rate:'1310'})).status,400);
+ const financial=(await f.request('/api/reports/financial')).data;assert.equal(financial.debit,financial.credit);
+ }finally{await f.cleanup()}
+});
+
+test('ERP: existing scanner protocol pairs over trusted test TLS, queues barcodes and isolates browser sessions',async()=>{
+ const f=await fixture();try{await f.login();assert.equal((await f.request('/api/v1/market/scanner/pair','POST',{})).status,400);
+ const cert=readFileSync(join(root,'tests/fixtures/test-only-localhost.crt'),'utf8'),key=readFileSync(join(root,'tests/fixtures/test-only-localhost.key'),'utf8'),probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+ let config=await f.request('/api/scanner/config','POST',{hostname:'127.0.0.1',port,cert,key});assert.equal(config.status,200);assert.equal(config.data.restart_required,true);await f.stop();await f.start();await f.login();
+ const settings=(await f.request('/api/scanner/config')).data;assert.equal(settings.enabled,true);assert.equal(settings.origin,'https://127.0.0.1:'+port);
+ const pair=await created(f,'/api/v1/market/scanner/pair',{});assert.match(pair.qr_url,new RegExp('^https://127\\.0\\.0\\.1:'+port+'/market-scanner\\.html#[a-f0-9]{32}$'));
+ function secure(path,method='GET',body){return new Promise((resolve,reject)=>{const request=https.request({hostname:'127.0.0.1',port,path,method,ca:cert,headers:{'Content-Type':'application/json'}},r=>{let text='';r.on('data',x=>text+=x);r.on('end',()=>resolve({status:r.statusCode,data:JSON.parse(text)}))});request.on('error',reject);request.end(body===undefined?undefined:JSON.stringify(body))})}
+ const base='/api/v1/market/scanner/'+pair.token;assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request(base+'/status')).status,403);const event=await secure(base+'/scan','POST',{barcode:'SCANNER-LOCAL'});assert.equal(event.status,200);
+ let poll=await f.request(base+'/poll');assert.equal(poll.status,200);assert.equal(poll.data.events[0].barcode,'SCANNER-LOCAL');assert.equal((await f.request(base+'/poll?since='+event.data.id)).data.events.length,0);
+ const other=await fetch(f.base()+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});const cookie=other.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');const foreign=await fetch(f.base()+base+'/poll',{headers:{Cookie:cookie}});assert.equal(foreign.status,410);
+ assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);
  }finally{await f.cleanup()}
 });

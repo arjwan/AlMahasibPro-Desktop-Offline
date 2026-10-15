@@ -1,0 +1,1 @@
+These self-signed localhost certificates and their private key are public test fixtures only. They were generated solely to test TLS with an explicitly trusted test CA. They are excluded from packaged application files. Never configure them on a production device.

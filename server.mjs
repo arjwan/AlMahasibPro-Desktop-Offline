@@ -1,5 +1,8 @@
 import http from 'node:http';
 import {extendERP} from './erp.mjs';
+import {scannerERP} from './scanner.mjs';
+import {currencyERP} from './currency.mjs';
+import {advancedERP} from './advanced.mjs';
 import {createAccess} from './access.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -33,7 +36,7 @@ function migrate(){
     const requiredTables=['settings','users','permissions','accounts','journal_entries','journal_items','warehouses','units','products','product_warehouse','inventory_moves','partners','purchase_invoices','purchase_items','sale_invoices','sale_items','sale_returns','sale_return_items'];
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
-    const schemaChange=currentVersion<5||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const schemaChange=currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)fs.copyFileSync(dbPath,backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -141,6 +144,7 @@ function postJournal(description,reference,lines,accountingDate=null){
 }
 function postSale(invoiceId){
  const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
+ if(sale.source==='pos')db.prepare('UPDATE sale_items SET loaded_qty=qty WHERE invoice_id=?').run(invoiceId);
  const cost=db.prepare('SELECT COALESCE(SUM(COALESCE(cost_total,qty*cost_snapshot)),0) AS total FROM sale_items WHERE invoice_id=?').get(invoiceId).total;
  const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
  postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',cost,0],['102',0,cost]]);
@@ -175,13 +179,17 @@ function transaction(fn){db.exec('BEGIN IMMEDIATE');try{
  db.exec('COMMIT');return result
 }catch(e){db.exec('ROLLBACK');throw e}}
 const erp=extendERP({db,dbPath,send,inputError,readJSON,transaction,inventory,postJournal,postSale});
-const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});
-const server=http.createServer((req,res)=>{
+const advanced=advancedERP({db,inputError,postJournal,inventory,erp});erp.setAdvanced(advanced);
+const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON});
+const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});db.exec('PRAGMA user_version=6');
+const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
+const handler=(req,res)=>{
  let body='';req.on('data',chunk=>{body+=chunk;if(body.length>42e6)req.destroy()});
  req.on('end',()=>{
  try{
  const url=new URL(req.url,'http://localhost'),p=url.pathname;
  erp.setActor(null);
+ if(scanner.publicHandle(req,res,p,body))return;
  if(access.handle(req,res,p,body))return;
  erp.setActor(req.user?.id||null);
  operation=null;
@@ -192,10 +200,15 @@ const server=http.createServer((req,res)=>{
  if(cached){if(cached.route!==route||cached.payload!==payload)inputError('معرف العملية مستخدم لطلب مختلف');return send(res,200,JSON.parse(cached.result))}
  operation={key,route,payload};
  }
+ if(scanner.handle(req,res,p,body))return;
+ if(currency.handle(req,res,p,body))return;
  if(erp.handle(req,res,p,body,url))return;
  if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
  if(req.method==='GET'&&p==='/erp-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'erp-ui.js')));return}
- if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.4.1'});
+ if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
+ if(req.method==='GET'&&p==='/scanner-qrcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'scanner-qrcode.js')));return}
+ if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<html dir="rtl"><meta charset="utf-8"><h2>ربط ماسح المحاسب برو</h2><p>افتح تطبيق الماسح الحالي وامسح رمز الربط في شاشة الكاشير.</p></html>');return}
+ if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.5.0'});
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
  if(req.method==='POST'&&p==='/api/products'){
@@ -229,7 +242,7 @@ const server=http.createServer((req,res)=>{
  if(req.method==='GET'&&p==='/api/purchases')return send(res,200,db.prepare('SELECT p.*,v.name AS supplier FROM purchase_invoices p LEFT JOIN partners v ON v.id=p.partner_id ORDER BY p.id DESC LIMIT 200').all());
  if(req.method==='POST'&&p==='/api/purchases'){
  erp.periodOpen();
- const v=readJSON(body),lines=v.lines,partnerId=String(v.partner_id||''),warehouseId=Number(v.warehouse_id||1),paid=Number(v.paid||0);
+ const v=currency.normalize(readJSON(body),'purchase'),lines=v.lines,partnerId=String(v.partner_id||''),warehouseId=Number(v.warehouse_id||1),paid=Number(v.paid||0);
  if(!Array.isArray(lines)||!lines.length||!Number.isSafeInteger(warehouseId)||warehouseId<=0||!Number.isSafeInteger(paid)||paid<0)inputError('بيانات فاتورة الشراء غير صحيحة');
  const result=transaction(()=>{
  const party=db.prepare('SELECT * FROM partners WHERE id=?').get(partnerId);
@@ -240,7 +253,7 @@ const server=http.createServer((req,res)=>{
  const product=db.prepare('SELECT * FROM products WHERE id=?').get(String(line.product_id||''));
  const qty=Number(line.qty),cost=Number(line.cost);
  if(!product||!Number.isSafeInteger(qty)||qty<=0||!Number.isSafeInteger(cost)||cost<0)inputError('المادة أو الكمية أو التكلفة غير صحيحة');
- const total=qty*cost;if(!Number.isSafeInteger(total)||!Number.isSafeInteger(net+total))inputError('مبلغ الفاتورة كبير جداً');
+ const total=line.__base_total??qty*cost;if(!Number.isSafeInteger(total)||!Number.isSafeInteger(net+total))inputError('مبلغ الفاتورة كبير جداً');
  net+=total;items.push({product,qty,cost,total});
  }
  if(paid>net)inputError('المدفوع أكبر من قيمة الفاتورة');
@@ -248,7 +261,7 @@ const server=http.createServer((req,res)=>{
  const result=db.prepare('INSERT INTO purchase_invoices(invoice_no,partner_id,date,subtotal,discount,net,payment_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(null,partnerId,date,net,0,net,paid===net?'paid':paid?'partial':'unpaid',now);
  const id=Number(result.lastInsertRowid),invoiceNo='P-'+String(id).padStart(6,'0');
  db.prepare('UPDATE purchase_invoices SET invoice_no=? WHERE id=?').run(invoiceNo,id);
- db.prepare('UPDATE purchase_invoices SET warehouse_id=?,paid=? WHERE id=?').run(warehouseId,paid,id);
+ db.prepare('UPDATE purchase_invoices SET warehouse_id=?,paid=? WHERE id=?').run(warehouseId,paid,id);currency.snapshot('purchase_invoices',id,v);
  for(const item of items){
  db.prepare('INSERT INTO purchase_items(invoice_id,product_id,qty,cost,line_total) VALUES(?,?,?,?,?)').run(id,item.product.id,item.qty,item.cost,item.total);
  db.prepare('UPDATE purchase_items SET product_name=? WHERE invoice_id=? AND product_id=?').run(item.product.name,id,item.product.id);
@@ -270,10 +283,10 @@ const server=http.createServer((req,res)=>{
  if(req.method==='GET'&&invoiceMatch){
  const invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(Number(invoiceMatch[1]));
  if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
- return send(res,200,{...invoice,lines:db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoice.id)});
+ return send(res,200,{...invoice,shipments:db.prepare('SELECT * FROM shipments WHERE invoice_id=? ORDER BY id').all(invoice.id),lines:db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoice.id)});
  }
  if(req.method==='POST'&&p==='/api/invoices'){
- const v=readJSON(body),lines=v.lines,status=v.source==='company'?'held':v.status==='held'?'held':'paid',discount=Number(v.discount||0),warehouseId=Number(v.warehouse_id||1);
+ const v=currency.normalize(readJSON(body),'sale'),lines=v.lines,status=v.source==='company'?'held':v.status==='held'?'held':'paid',discount=Number(v.discount||0),warehouseId=Number(v.warehouse_id||1);
  if(!Number.isSafeInteger(warehouseId)||!db.prepare('SELECT id FROM warehouses WHERE id=?').get(warehouseId))inputError('المخزن غير موجود');
  if(v.agent_id&&!db.prepare('SELECT id FROM agents WHERE id=?').get(Number(v.agent_id)))inputError('المندوب غير موجود');
  if(v.branch_id&&!db.prepare('SELECT id FROM branches WHERE id=?').get(Number(v.branch_id)))inputError('الفرع غير موجود');
@@ -286,8 +299,8 @@ const server=http.createServer((req,res)=>{
  const qty=Number(line.qty);
  if(!product||!Number.isSafeInteger(qty)||qty<=0)inputError('مادة أو كمية غير صحيحة');
  const price=v.source==='company'&&line.price!==undefined?Number(line.price):product.price;
- if(!Number.isSafeInteger(price)||price<0||(v.source==='company'&&price===0))inputError('سعر المادة غير صحيح أو لم يحدد');
- const lineTotal=qty*price;
+ if(!Number.isSafeInteger(price)||price<0||(v.source==='company'&&price===0&&!v.__fx))inputError('سعر المادة غير صحيح أو لم يحدد');
+ const lineTotal=line.__base_total??qty*price;
  if(!Number.isSafeInteger(lineTotal))inputError('القيمة كبيرة جدًا');
  if(!Number.isSafeInteger(subtotal+lineTotal))inputError('القيمة كبيرة جدًا');
  subtotal+=lineTotal;prepared.push({product,qty,lineTotal,price});
@@ -312,7 +325,7 @@ const server=http.createServer((req,res)=>{
  db.prepare('UPDATE sale_items SET product_name=? WHERE invoice_id=? AND product_id=?').run(line.product.name,id,line.product.id);
  if(status==='paid'){const cost=erp.inventoryCost(line.product.id,line.qty);db.prepare('UPDATE sale_items SET cost_total=? WHERE invoice_id=? AND product_id=? AND cost_total IS NULL').run(cost,id,line.product.id);inventory(line.product.id,warehouseId,-line.qty,'sale','S-'+id,cost);}
  }
- db.prepare('UPDATE sale_invoices SET cashier_id=? WHERE id=?').run(req.user.id,id);
+ db.prepare('UPDATE sale_invoices SET cashier_id=? WHERE id=?').run(req.user.id,id);currency.snapshot('sale_invoices',id,v);
  db.prepare('UPDATE sale_invoices SET source=?,workflow=? WHERE id=?').run(v.source==='company'?'company':'pos',v.source==='company'?'draft':status==='held'?'draft':'loaded',id);
  let allocated=0n;for(const item of db.prepare('SELECT id,line_total FROM sale_items WHERE invoice_id=? ORDER BY id').all(id)){
  const next=allocated+BigInt(item.line_total),amount=subtotal?Number(next*BigInt(net)/BigInt(subtotal)-allocated*BigInt(net)/BigInt(subtotal)):0;
@@ -342,6 +355,7 @@ const server=http.createServer((req,res)=>{
  const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart);
  if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
  const result=transaction(()=>{
+ if(['107','108'].includes(counterpart))inputError('استخدم سند الدولار لهذا الحساب');
  if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(counterpart))inputError('الحساب المقابل غير موجود');
  const incoming=v.kind==='receipt',description=String(v.description||'سند نقدي');
  if(v.partner_id){const party=db.prepare('SELECT * FROM partners WHERE id=?').get(String(v.partner_id));if(!party)inputError('الطرف غير موجود');if(!['104','201'].includes(counterpart))inputError('تسديد الطرف يحتاج حساب الذمم');if(counterpart==='104'&&!['customer','both'].includes(party.type))inputError('اختر عميلاً');if(counterpart==='201'&&!['supplier','both'].includes(party.type))inputError('اختر مورداً');}
@@ -366,12 +380,14 @@ const server=http.createServer((req,res)=>{
  if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
  if(req.method==='POST'&&p==='/api/journal'){
  const v=readJSON(body),lines=v.lines;
+ if(/^(S-|P-|R-|V-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
  erp.periodOpen(v.date||new Date().toISOString().slice(0,10));
  if(!Array.isArray(lines)||lines.length<2)inputError('القيد يحتاج سطرين على الأقل');
  const result=transaction(()=>{
  let debit=0,credit=0;
  for(const line of lines){
  const d=Number(line.debit||0),c=Number(line.credit||0);
+ if(['107','108'].includes(String(line.account_id)))inputError('استخدم سند الدولار لتحريك رصيده الفعلي');
  if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(String(line.account_id))||!Number.isSafeInteger(d)||!Number.isSafeInteger(c)||d<0||c<0||(d>0&&c>0)||(d===0&&c===0))inputError('سطر قيد غير صحيح');
  debit+=d;credit+=c;
  }
@@ -387,14 +403,15 @@ const server=http.createServer((req,res)=>{
  }
  if(req.method==='GET'&&p==='/api/stock/moves')return send(res,200,db.prepare('SELECT m.*,p.name AS product_name,w.name AS warehouse_name FROM inventory_moves m LEFT JOIN products p ON p.id=m.product_id LEFT JOIN warehouses w ON w.id=m.warehouse_id ORDER BY m.id DESC LIMIT 200').all());
  if(req.method==='GET'&&p==='/api/summary'){
- const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(net),0) AS sales FROM sale_invoices WHERE status='paid'").get();
- const today=db.prepare("SELECT COALESCE(SUM(net),0) AS total FROM sale_invoices WHERE status='paid' AND date=?").get(new Date().toISOString().slice(0,10));
+ const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN shipping_version>0 THEN (SELECT SUM(net) FROM shipments s WHERE s.invoice_id=i.id) ELSE net END),0) AS sales FROM sale_invoices i WHERE (status='paid' AND shipping_version=0) OR shipping_version>0").get();
+ const day=new Date().toISOString().slice(0,10);const today=db.prepare("SELECT (SELECT COALESCE(SUM(net),0) FROM sale_invoices WHERE status='paid' AND shipping_version=0 AND date=?)+(SELECT COALESCE(SUM(net),0) FROM shipments WHERE substr(date,1,10)=?) AS total").get(day,day);
  const stock=db.prepare('SELECT COUNT(*) AS products,COALESCE(SUM(stock),0) AS units FROM product_warehouse').get();
  return send(res,200,{...sales,todaySales:today.total,products:all().length,stockUnits:stock.units,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
  }
  return send(res,404,{error:'المسار غير موجود'});
  }catch(e){send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة':e.message})}
  });
-});
+};
+const server=http.createServer(handler);scanner.startTLS(handler);
 const host=process.env.ALMAHASIB_HOST||'127.0.0.1',port=Number(process.env.PORT||3765);
 server.listen(port,host,()=>console.log('AlMahasibPro Desktop: http://'+host+':'+server.address().port+' | DB: '+dbPath));

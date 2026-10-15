@@ -1,0 +1,47 @@
+(()=>{
+'use strict';
+const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(p,method='GET',body){const r=await fetch(p,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||'تعذر تنفيذ الطلب');return data}
+const field=(id,label,type='text',value='')=>'<label>'+esc(label)+'<input class="input" id="adv-'+id+'" type="'+type+'" value="'+esc(value)+'" '+(type==='number'?'step="0.01"':'')+'></label>';
+const select=(id,label,rows)=>'<label>'+esc(label)+'<select class="input" id="adv-'+id+'">'+rows.map(([v,label])=>'<option value="'+esc(v)+'">'+esc(label)+'</option>').join('')+'</select></label>';
+function panel(body,title,html){const el=document.createElement('div');el.className='panel';el.innerHTML='<h3>'+esc(title)+'</h3>'+html;body.append(el);return el}
+function form(body,id,title,html,label='حفظ'){const el=panel(body,title,'<form id="advform-'+id+'"><div class="workspace-form">'+html+'</div><button class="btn" type="submit">'+esc(label)+'</button><p class="sub" id="advmsg-'+id+'"></p></form>');return el}
+function bind(id,fn,reload=true){$('advform-'+id).onsubmit=async ev=>{ev.preventDefault();const button=ev.currentTarget.querySelector('button[type=submit]');button.disabled=true;try{const data=await fn();if(reload&&!data?.restart_required)await window.go(document.querySelector('.nav.active').dataset.page);const msg=$('advmsg-'+id);if(msg&&reload)msg.textContent=data?.restart_required?'تم الحفظ؛ أعد تشغيل البرنامج لتفعيل HTTPS':'تم الحفظ بنجاح'}catch(e){const msg=$('advmsg-'+id);if(msg)msg.textContent=e.message}finally{button.disabled=false}}}
+const val=id=>$('adv-'+id).value;
+let scannerToken=null,cursor=0,pollBusy=false;
+async function poll(){if(!scannerToken||pollBusy||!$('pos')||$('pos').classList.contains('hide'))return;pollBusy=true;try{const r=await api('/api/v1/market/scanner/'+scannerToken+'/poll?since='+cursor);for(const event of r.events){add(event.barcode);cursor=event.id}}catch(e){$('message').textContent=e.message;scannerToken=null}finally{pollBusy=false}}
+const timer=setInterval(poll,500);window.addEventListener('beforeunload',()=>clearInterval(timer));
+const oldGo=window.go;window.go=async function(page){await oldGo(page);if(page==='pos'&&!$('adv-scannerpanel')){
+ const host=document.createElement('div');host.className='panel';host.id='adv-scannerpanel';host.innerHTML='<button class="btn light" id="adv-pairscanner">ربط ماسح الهاتف الحالي</button> <button class="btn light" id="adv-unpairscanner">إلغاء الربط</button><div id="adv-scannerqr"></div><p id="adv-scannernote"></p>';$('pos').append(host);
+ $('adv-pairscanner').onclick=async()=>{try{const pair=await api('/api/v1/market/scanner/pair','POST',{});scannerToken=pair.token;cursor=0;const qr=qrcode(0,'M');qr.addData(pair.qr_url);qr.make();$('adv-scannerqr').innerHTML=qr.createSvgTag({cellSize:4,margin:4,scalable:true});$('adv-scannerqr').querySelector('svg').style='width:240px;height:240px';$('adv-scannernote').textContent='امسح QR بتطبيق Android الحالي. يحتاج الهاتف شهادة HTTPS موثوقة وعنواناً يصل إليه على الشبكة.'}catch(e){$('adv-scannernote').textContent=e.message}};
+ $('adv-unpairscanner').onclick=async()=>{try{if(scannerToken)await api('/api/v1/market/scanner/'+scannerToken+'/revoke','POST',{});scannerToken=null;$('adv-scannerqr').replaceChildren();$('adv-scannernote').textContent='تم إلغاء الربط'}catch(e){$('adv-scannernote').textContent=e.message}};
+ }};
+const previous=window.decorateERPPage;
+window.decorateERPPage=async(page,body)=>{
+ if(previous)await previous(page,body);
+ if(['sales','purchases'].includes(page)){
+  const currency=await api('/api/currency'),select=$(page==='sales'?'ws-salecurrency':'erp-purchasecurrency');if(select){select.dataset.rate=currency.rate||'';select.title='سعر الدولار المعتمد: '+(currency.rate||'غير محدد');const first=select.querySelector('option[value=USD]');if(first)first.disabled=!currency.rate;
+   select.onchange=()=>{if(page==='purchases')$('erp-purchaseproduct').onchange();if(page==='sales'){$('ws-saleadd').title='أدخل سعر المادة بعملة الفاتورة المختارة'}const target=page==='sales'?'ws-salenotice':'erp-purchasestatus';$(target).textContent='عملة الأسعار: '+select.value+' | سعر الدولار: '+(currency.rate||'—')+' | المبالغ المدفوعة تُدخل بالدينار. لا تغيّر العملة بعد إضافة السطور؛ احذفها وأضفها بالعملة المطلوبة.'};
+  }
+ }
+ if(page==='sales'&&window.erpUser?.modules.includes('stock')){
+  body.querySelectorAll('.ws-workflow[data-action=load]').forEach(full=>{const button=document.createElement('button');button.className='btn light';button.textContent='تحميل جزئي';full.after(button);button.onclick=async()=>{try{const invoice=await api('/api/invoices/'+full.dataset.id);let editor=$('adv-shipmenteditor');if(editor)editor.remove();editor=document.createElement('div');editor.id='adv-shipmenteditor';body.prepend(editor);form(editor,'shipment','تحميل دفعة من '+invoice.invoice_no,invoice.lines.filter(x=>x.qty>x.loaded_qty).map(x=>field('ship-'+x.id,(x.product_name||x.product_id)+' | محمل '+x.loaded_qty+' | متبقٍ '+(x.qty-x.loaded_qty),'number',0)).join(''),'تأكيد تحميل الدفعة');bind('shipment',()=>api('/api/company-sales/'+invoice.id+'/load','POST',{expected_version:invoice.shipping_version,lines:invoice.lines.map(x=>({item_id:x.id,qty:Number($('adv-ship-'+x.id)?.value||0)})).filter(x=>x.qty>0)}))}catch(e){alert(e.message)}}});
+ }
+ if(page==='settings'||page==='devices'){
+  const currency=await api('/api/currency'),tls=await api('/api/scanner/config');
+  form(body,'rate','سعر صرف الدولار المعتمد',field('rate','دينار لكل دولار','number',currency.rate||''),'اعتماد السعر');$('adv-rate').step='0.000001';bind('rate',()=>api('/api/currency/rate','POST',{rate:val('rate')}));
+  form(body,'tls','HTTPS لربط ماسح Android الموجود',field('tlshost','اسم الخادم أو IP المطابق للشهادة')+field('tlsport','منفذ HTTPS','number',3776)+field('tlscert','ملف الشهادة PEM','file')+field('tlskey','ملف المفتاح الخاص PEM','file'),'حفظ إعداد HTTPS');
+  $('advmsg-tls').textContent=tls.enabled?'HTTPS يعمل: '+tls.origin:(tls.error||'أضف شهادة موثوقة على الهاتف تغطي عنوان الخادم. لا يحتاج التطبيق إلى إعادة بناء.');
+  bind('tls',async()=>{const cert=$('adv-tlscert').files[0],key=$('adv-tlskey').files[0];if(!cert||!key)throw Error('اختر ملف الشهادة والمفتاح');return api('/api/scanner/config','POST',{hostname:val('tlshost'),port:Number(val('tlsport')),cert:await cert.text(),key:await key.text()})});
+ }
+ if(page==='banks'){
+  const [currency,accounts,partners,moves]=await Promise.all([api('/api/currency'),api('/api/accounts'),api('/api/partners'),api('/api/currency/vouchers')]);
+  form(body,'fx','سند قبض أو صرف بالدولار',select('fxkind','النوع',[['receipt','قبض'],['payment','صرف']])+select('fxcash','الحساب',[['107','الصندوق بالدولار'],['108','البنك بالدولار']])+select('fxaccount','الحساب المقابل',accounts.filter(x=>!['107','108'].includes(x.id)).map(x=>[x.id,x.name]))+select('fxparty','الطرف',[['','بدون طرف'],...partners.map(x=>[x.id,x.name])])+field('fxamount','المبلغ بالدولار','number')+field('fxdesc','البيان'));
+  bind('fx',()=>api('/api/currency/vouchers','POST',{kind:val('fxkind'),account_id:val('fxcash'),counterpart:val('fxaccount'),partner_id:val('fxparty')||null,amount:val('fxamount'),rate:currency.rate,description:val('fxdesc')}));
+  panel(body,'أرصدة الدولار','<p>سعر الدولار المعتمد: '+esc(currency.rate||'غير محدد')+'</p>'+currency.balances.map(x=>'<p>'+esc(x.account_id==='107'?'الصندوق':'البنك')+': '+(x.foreign_cents/100).toFixed(2)+' USD | قيمة دفترية '+x.base_value+' د.ع</p>').join('')+'<p>عدد سندات الدولار: '+moves.length+'</p>');
+ }
+ if(page==='reports'){
+  const periods=await api('/api/periods');form(body,'profit','نتيجة فترة قبل الإقفال',select('profitperiod','الفترة',periods.map(x=>[x.id,x.name])),'عرض النتيجة');bind('profit',async()=>{const report=await api('/api/reports/period-profit?period_id='+val('profitperiod'));$('advmsg-profit').textContent='الإيرادات '+report.revenue+' | المصروفات '+report.expenses+' | النتيجة '+report.profit+' د.ع';return report},false);
+ }
+};
+})();
