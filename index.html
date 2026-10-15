@@ -44,12 +44,6 @@ $('hold').onclick=async()=>{
 $('restore').onclick=async()=>{
  try{const list=await api('/api/held');if(!list.length){notice('لا توجد فواتير معلقة');return}const id=prompt('رقم الفاتورة المعلقة: '+list.map(x=>x.id+' ('+x.invoice_no+')').join('، '),String(list[0].id));if(!id)return;const inv=await api('/api/invoices/'+encodeURIComponent(id));if(inv.status!=='held')throw Error('الفاتورة ليست معلقة');if(!confirm('اعتماد الفاتورة المعلقة '+inv.invoice_no+' وخصم مخزونها؟'))return;await api('/api/held/'+encodeURIComponent(id)+'/complete','POST');await refreshLive();notice('تم اعتماد الفاتورة '+inv.invoice_no)}catch(e){notice(e.message)}
 };
-const previousGo=go;
-go=function(page){previousGo(page);if(page==='stock'){ $('placeholderTitle').textContent='📦 إدارة المخزون';$('placeholder').innerHTML='<h2>📦 إدارة المخزون</h2><div class="bar"><input class="input" id="itemId" placeholder="رمز المادة"><input class="input" id="itemName" placeholder="اسم المادة"><input class="input" id="itemCost" type="number" placeholder="التكلفة"><input class="input" id="itemPrice" type="number" placeholder="سعر البيع"><button class="btn" id="saveItem">إضافة مادة</button></div><div id="stockList" class="panel"></div>';const draw=()=>{$('stockList').innerHTML='<h3>المواد المسجلة</h3>'+products.map(p=>'<div class="line"><span>'+esc(p.name)+' ('+esc(p.id)+') — '+money(p.price)+' — الرصيد '+p.stock+'</span><button class="btn light" data-stock="'+esc(p.id)+'">تسوية الرصيد</button></div>').join('');$('stockList').querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{const delta=Number(prompt('أدخل الكمية المضافة، أو رقمًا سالبًا للصرف'));if(!Number.isSafeInteger(delta)||!delta)return;try{await api('/api/stock/adjust','POST',{product_id:b.dataset.stock,delta});await refreshLive();draw()}catch(e){alert(e.message)}})};$('saveItem').onclick=async()=>{try{await api('/api/products','POST',{id:$('itemId').value,name:$('itemName').value,cost:Number($('itemCost').value),price:Number($('itemPrice').value)});await refreshLive();draw();$('itemId').value='';$('itemName').value=''}catch(e){alert(e.message)}};draw()}
- if(page==='sales'){ $('placeholder').innerHTML='<h2>🧾 سجل المبيعات المحفوظة</h2><div id="salesList">جار التحميل...</div>';api('/api/invoices').then(items=>{$('salesList').innerHTML=items.length?items.map(x=>'<div class="line"><span>'+esc(x.invoice_no)+' — '+esc(x.date)+' — '+esc(x.status)+'</span><b>'+money(x.net)+'</b></div>').join(''):'لا توجد فواتير بعد'}).catch(e=>$('salesList').textContent=e.message)}
-};
-document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));
-$('tiles').querySelectorAll('button').forEach(b=>b.onclick=()=>go(b.dataset.page));
 refreshLive();
 </script>
 <style>
@@ -111,6 +105,7 @@ body.innerHTML='<div class="workspace-grid">'+actions.map((x,i)=>'<div class="wo
 }
 const previous=window.go;
 window.go=function(page){previous(page);if(pages[page])show(page)};
+window.addEventListener('error',event=>{const body=document.getElementById('ws-body');if(body)body.textContent='خطأ في الواجهة: '+event.message});
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>window.go(n.dataset.page));
 document.querySelectorAll('#tiles button').forEach(n=>n.onclick=()=>window.go(n.dataset.page));
 })();
