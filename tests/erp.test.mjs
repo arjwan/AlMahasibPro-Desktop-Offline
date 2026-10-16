@@ -98,7 +98,11 @@ test('ERP: asset depreciation, budgets, bank matching, CSV import, count and fiv
 
 test('ERP: old database migration preserves products and startup does not duplicate warehouse',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'alma-legacy-')),database=join(dir,'legacy.sqlite');const old=new DatabaseSync(database);old.exec("CREATE TABLE products(id TEXT PRIMARY KEY,name TEXT NOT NULL,price INTEGER NOT NULL);INSERT INTO products VALUES('legacy','قديم',100);PRAGMA user_version=2");old.close();let child;try{
- for(let run=0;run<2;run++){const server=await startServer(database);child=server.child;await server.stop();}
+ for(let run=0;run<2;run++){const server=await startServer(database);child=server.child;
+ const login=await fetch(server.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});assert.equal(login.status,200);
+ const cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
+ const products=await fetch(server.base+'/api/products',{headers:{Cookie:cookie}});assert.equal(products.status,200);const rows=await products.json();assert.equal(rows.find(x=>x.id==='legacy').price,100);
+ await server.stop();}
  const check=new DatabaseSync(database,{readOnly:true});assert.equal(check.prepare("SELECT name FROM products WHERE id='legacy'").get().name,'قديم');assert.ok(check.prepare('PRAGMA table_info(products)').all().some(x=>x.name==='barcode'));assert.equal(check.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,1);assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
  }finally{await stopChild(child);rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });

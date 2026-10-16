@@ -90,7 +90,8 @@ function migrate(){
     for(const [column,definition] of [
       ['barcode','TEXT'],['unit_id','TEXT'],['category','TEXT'],
       ['cost','INTEGER NOT NULL DEFAULT 0'],['price','INTEGER NOT NULL DEFAULT 0'],
-      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT']
+      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT'],
+      ['archived','INTEGER NOT NULL DEFAULT 0']
     ]){
       if(!productColumns.has(column)){
         log('Adding missing products column: '+column);
