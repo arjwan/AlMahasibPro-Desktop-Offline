@@ -2,8 +2,14 @@ import {chromium} from 'playwright';
 import {startServer} from './helpers/server.mjs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {DatabaseSync,backup} from 'node:sqlite';
 const dir=path.resolve(process.argv[2]||'work/demo-market-large-0.5.2');
-const server=await startServer(path.join(dir,'company.sqlite'));let browser;
+assert.equal(JSON.parse(readFileSync(path.join(dir,'verification.json'),'utf8')).demo_only,true);
+const isolated=mkdtempSync(path.join(tmpdir(),'alma-layout-')),dbPath=path.join(isolated,'company.sqlite');
+const source=new DatabaseSync(path.join(dir,'company.sqlite'),{readOnly:true});await backup(source,dbPath);source.close();const fixture=new DatabaseSync(dbPath);fixture.exec('DELETE FROM registered_devices');fixture.close();
+const server=await startServer(dbPath);let browser;
 try{
  browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000},hasTouch:true}),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(server.base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});await page.evaluate(()=>window.go('pos'));await page.locator('.product').first().waitFor();
@@ -16,4 +22,4 @@ try{
  // Real touch drag through Chromium's input path on the invoice pane.
  const cdp=await context.newCDPSession(page),box=await page.locator('.bill-scroll').boundingBox();await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+30}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:box.x+box.width/2,y:box.y+150}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await page.waitForFunction(previous=>document.querySelector('.bill-scroll').scrollTop<previous,movedBill.bill);assert.equal((await state()).header,initial.header);console.log('POS touch scroll keeps header and product pane independent: PASS');
  await page.setViewportSize({width:390,height:844});await page.locator('#print').scrollIntoViewIfNeeded();const mobile=await state();assert.ok(mobile.saveBottom<=844);assert.deepEqual(errors,[]);console.log('POS narrow viewport keeps invoice actions reachable: PASS');
-}finally{await browser?.close();await server.stop()}
+}finally{await browser?.close();await server.stop();rmSync(isolated,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
