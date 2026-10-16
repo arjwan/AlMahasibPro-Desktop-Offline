@@ -161,7 +161,10 @@ test('ERP: existing scanner protocol pairs over trusted test TLS, queues barcode
  const base='/api/v1/market/scanner/'+pair.token;assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request(base+'/status')).status,403);const event=await secure(base+'/scan','POST',{barcode:'SCANNER-LOCAL'});assert.equal(event.status,200);
  let poll=await f.request(base+'/poll');assert.equal(poll.status,200);assert.equal(poll.data.events[0].barcode,'SCANNER-LOCAL');assert.equal((await f.request(base+'/poll?since='+event.data.id)).data.events.length,0);
  const other=await fetch(f.base()+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});const cookie=other.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');const foreign=await fetch(f.base()+base+'/poll',{headers:{Cookie:cookie}});assert.equal(foreign.status,410);
- assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);
+ const second=await created(f,'/api/v1/market/scanner/pair',{});assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request('/api/v1/market/scanner/pairs')).data.length,2);
+ await f.stop();await f.start();await f.login();assert.equal((await f.request(base+'/poll')).status,200);assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request('/api/v1/market/scanner/pairs')).data.length,2);
+ assert.equal((await secure('/api/v1/market/scanner/'+second.token+'/scan','POST',{barcode:'SECOND-PHONE'})).status,200);assert.equal((await f.request('/api/v1/market/scanner/'+second.token+'/poll')).data.events[0].barcode,'SECOND-PHONE');
+ assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);assert.equal((await secure('/api/v1/market/scanner/'+second.token+'/status')).status,200);
  }finally{await f.cleanup()}
 });
 

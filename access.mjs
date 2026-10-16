@@ -35,7 +35,7 @@ export function createAccess({db,send,readJSON,inputError,audit,licensing}){
    res.setHeader('Set-Cookie',['alma_session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800','alma_device='+device+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000']);audit('login',user.id);send(res,200,{id:user.id,username:user.username,full_name:user.full_name,role:user.role,modules:grants(user)});return true;
   }
   const user=userFor(req);if(!user){send(res,401,{error:'يرجى تسجيل الدخول'});return true}
-  req.user=user;req.sessionId=cookie(req);
+  req.user=user;req.sessionId=cookie(req);req.deviceId=sessions.get(cookie(req)).device;
   if(req.method==='GET'&&p==='/api/auth/me'){send(res,200,{...user,modules:grants(user)});return true}
   if(req.method==='POST'&&p==='/api/auth/logout'){sessions.delete(cookie(req));res.setHeader('Set-Cookie','alma_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');send(res,200,{ok:true});return true}
   if(req.method==='POST'&&p==='/api/auth/password'){
