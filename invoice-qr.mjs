@@ -18,7 +18,7 @@ export function invoiceQrPayload(invoice, kind) {
   total: Number(line.line_total ?? (Number(line.qty) * Number(line.price ?? line.cost ?? 0)))
  }));
  if (lines.some(x => !x.id || !Number.isSafeInteger(x.qty) || x.qty <= 0 || !Number.isFinite(x.price) || x.price < 0 || !Number.isFinite(x.total))) throw Error('Invalid invoice line');
- return {v:1,type:kind,no:clean(invoice.invoice_no),date:clean(invoice.date),party:clean(invoice.party_name ?? invoice.supplier ?? invoice.customer),currency:clean(invoice.currency || 'IQD'),lines,discount:Number(invoice.discount || 0),net:Number(invoice.net ?? lines.reduce((n,x)=>n+x.total,0))};
+ return {v:1,type:kind,no:clean(invoice.invoice_no),date:clean(invoice.date),party:clean(invoice.party_name ?? invoice.supplier ?? invoice.customer ?? invoice.party),currency:clean(invoice.currency || 'IQD'),lines,discount:Number(invoice.discount || 0),net:Number(invoice.net ?? lines.reduce((n,x)=>n+x.total,0))};
 }
 
 export function encodeInvoiceQr(invoice, kind) {
