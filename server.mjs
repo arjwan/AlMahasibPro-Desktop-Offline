@@ -474,6 +474,14 @@ const handler=(req,res)=>{
  if(req.method==='POST'&&p==='/api/payments'){const v=readJSON(body);return send(res,201,processPayment(Number(v.invoice_id),v,req.user));}
  if(req.method==='GET'&&p==='/api/invoices')return send(res,200,db.prepare('SELECT * FROM sale_invoices ORDER BY id DESC LIMIT 200').all().map(paymentSummary));
  if(req.method==='GET'&&p==='/api/held')return send(res,200,db.prepare("SELECT * FROM sale_invoices WHERE status='held' AND cancelled=0 AND source='pos' ORDER BY id DESC").all());
+ if(req.method==='POST'&&p==='/api/invoice-qr/decode'){
+  try{
+   const {decodeInvoiceQrParts}=await import('./invoice-qr.mjs');
+   const input=readJSON(body),codes=input.parts;
+   if(!Array.isArray(codes)||codes.length>9999||codes.some(c=>typeof c!=='string'))return send(res,400,{error:'قائمة رموز QR غير صحيحة'});
+   return send(res,200,decodeInvoiceQrParts(codes));
+  }catch(error){return send(res,400,{error:error.message});}
+ }
  const invoiceQrMatch=p.match(/^\/api\/(purchases|invoices)\/([0-9]+)\/qr$/);
  if(req.method==='GET'&&invoiceQrMatch){
   const isPurchase=invoiceQrMatch[1]==='purchases',id=Number(invoiceQrMatch[2]);
