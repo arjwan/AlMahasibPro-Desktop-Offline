@@ -29,7 +29,8 @@ jobs:
       - run: node tests/ui.smoke.mjs
       - run: node tests/stock-ui.smoke.mjs
       - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
-        run: npm run build:win
+        name: Build Windows installer after all checks
+        run: npx electron-builder --win nsis --x64 --publish never
       - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
         uses: actions/upload-artifact@v4
         with:

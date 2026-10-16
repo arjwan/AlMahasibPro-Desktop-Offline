@@ -35,3 +35,10 @@ The initial broad run exposed a removed product-creation route and a purchase te
 These changes do not assert commercial release acceptance, signed licensing, external payment-provider integration or a newly built Windows installer.
 
 Final observed results: Node/SQLite suite **25 passed, 0 failed**; Edge browser acceptance **ALL UI CHECKS PASS**, including actual returns form and card refund accounting. Syntax and whitespace checks passed. Full test outputs are retained locally under work/ and copied to the task outputs for review.
+
+
+## Windows CI lifecycle correction
+
+The first main run (38896874609) was cancelled at the 20-minute job limit during npm test, before packaging. Its logs showed 15-second startup timeouts, an EPERM while deleting a database still held by a child, and orphan test servers keeping the runner alive. This is separate from the successful local installer build.
+
+The test harness now starts server-heavy test files sequentially, allows up to 60 seconds for a cold Windows server start, accumulates stdout across chunks, and includes server.log in startup diagnostics. A failed startup terminates its own child before throwing. Stopping an already stopped child returns immediately, and legacy migration cleanup waits for exit before removing its database directory. Each test has a finite five-minute limit. New regressions exercise repeated stop and startup-timeout cleanup; application checks remain enabled.

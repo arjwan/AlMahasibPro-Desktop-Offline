@@ -1,3 +1,4 @@
+import {startServer,stopChild} from './helpers/server.mjs';
 import https from 'node:https';
 import net from 'node:net';
 import test from 'node:test';
@@ -11,11 +12,11 @@ import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('../',import.meta.url));
 async function fixture(){
  const dir=mkdtempSync(join(tmpdir(),'alma-erp-')),dbPath=join(dir,'company.sqlite');let child,base,cookie='';let logs='';
- async function start(){child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,ALMAHASIB_DB:dbPath,PORT:'0'},stdio:['ignore','pipe','pipe']});child.stderr.on('data',x=>logs+=x);base=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Start timed out: '+logs)),15000);child.stdout.on('data',x=>{const m=String(x).match(/http:\/\/127.0.0.1:(\d+)/);if(m){clearTimeout(timer);resolve('http://127.0.0.1:'+m[1])}});child.once('exit',code=>{clearTimeout(timer);reject(Error('Server exited '+code+': '+logs))})});}
- async function stop(){if(child.exitCode===null){const exit=new Promise(r=>child.once('exit',r));child.kill();await exit}}
+ async function start(){const server=await startServer(dbPath);child=server.child;base=server.base;}
+ async function stop(){await stopChild(child)}
  async function request(path,method='GET',body,headers={}){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json',Cookie:cookie,...headers},body:body===undefined?undefined:JSON.stringify(body)});if(r.headers.getSetCookie().length){const jar=new Map(cookie.split('; ').filter(Boolean).map(x=>[x.split('=')[0],x]));for(const c of r.headers.getSetCookie()){const pair=c.split(';')[0];jar.set(pair.split('=')[0],pair)}cookie=[...jar.values()].join('; ')}const data=r.headers.get('content-type')?.includes('json')?await r.json():Buffer.from(await r.arrayBuffer());return {status:r.status,data}}
  async function login(username='admin',password='admin123'){const r=await request('/api/auth/login','POST',{username,password});assert.equal(r.status,200,JSON.stringify(r.data));return r}
- await start();return {request,login,start,stop,dbPath,dir,base:()=>base,cleanup:async()=>{await stop();rmSync(dir,{recursive:true,force:true})}};
+ await start();return {request,login,start,stop,dbPath,dir,base:()=>base,cleanup:async()=>{await stop();rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}};
 }
 async function created(f,path,body){const r=await f.request(path,'POST',body);assert.equal(r.status,201,JSON.stringify(r.data));return r.data}
 
@@ -97,9 +98,9 @@ test('ERP: asset depreciation, budgets, bank matching, CSV import, count and fiv
 
 test('ERP: old database migration preserves products and startup does not duplicate warehouse',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'alma-legacy-')),database=join(dir,'legacy.sqlite');const old=new DatabaseSync(database);old.exec("CREATE TABLE products(id TEXT PRIMARY KEY,name TEXT NOT NULL,price INTEGER NOT NULL);INSERT INTO products VALUES('legacy','قديم',100);PRAGMA user_version=2");old.close();let child;try{
- for(let run=0;run<2;run++){child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,ALMAHASIB_DB:database,PORT:'0'},stdio:['ignore','pipe','pipe']});let logs='';child.stderr.on('data',x=>logs+=x);await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error(logs||'migration timed out')),15000);child.stdout.once('data',()=>{clearTimeout(t);resolve()});child.once('exit',()=>{clearTimeout(t);reject(Error(logs))})});const done=new Promise(r=>child.once('exit',r));child.kill();await done}
+ for(let run=0;run<2;run++){const server=await startServer(database);child=server.child;await server.stop();}
  const check=new DatabaseSync(database,{readOnly:true});assert.equal(check.prepare("SELECT name FROM products WHERE id='legacy'").get().name,'قديم');assert.ok(check.prepare('PRAGMA table_info(products)').all().some(x=>x.name==='barcode'));assert.equal(check.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,1);assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
- }finally{if(child?.exitCode===null)child.kill();rmSync(dir,{recursive:true,force:true})}
+ }finally{await stopChild(child);rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
 
 test('ERP: carrying value and discounted returns preserve rounding remainders exactly',async()=>{

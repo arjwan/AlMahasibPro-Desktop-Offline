@@ -1,10 +1,9 @@
+import {startServer,stopChild} from './helpers/server.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {spawn} from 'node:child_process';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const dir=mkdtempSync(join(tmpdir(),'almahasib-test-'));
-const child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,ALMAHASIB_DB:join(dir,'test.sqlite'),PORT:'0'},stdio:['ignore','pipe','pipe']});
-let url='',logs='',session='';
-child.stdout.on('data',data=>{const match=String(data).match(/http:\/\/127\.0\.0\.1:\d+/);if(match)url=match[0]});
-child.stderr.on('data',data=>logs+=data);
+const server=await startServer(join(dir,'test.sqlite'));const child=server.child;
+let url=server.base,logs='',session='';
 async function request(path,method='GET',body){
  const r=await fetch(url+path,{method,headers:{'Content-Type':'application/json',Cookie:session},body:body?JSON.stringify(body):undefined});
  if(r.headers.getSetCookie().length){const jar=new Map(session.split('; ').filter(Boolean).map(x=>[x.split('=')[0],x]));for(const c of r.headers.getSetCookie()){const pair=c.split(';')[0];jar.set(pair.split('=')[0],pair)}session=[...jar.values()].join('; ')}
@@ -25,4 +24,4 @@ vouchers=await request('/api/cash/vouchers');assert.equal(vouchers.data.length,2
 financial=await request('/api/reports/financial');assert.equal(financial.data.profit,20750);assert.equal(financial.data.debit,financial.data.credit);
 let badWarehouse=await request('/api/invoices','POST',{...payload,warehouse_id:9999});assert.equal(badWarehouse.status,400);
 let badCustomer=await request('/api/invoices','POST',{...payload,partner_id:supplier.data.id});assert.equal(badCustomer.status,400);
-let summary=await request('/api/summary');assert.equal(summary.data.count,2);assert.equal(summary.data.sales,26750)}finally{if(child.exitCode===null){const exited=new Promise(r=>child.once('exit',r));child.kill();await exited}rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200})}});
+let summary=await request('/api/summary');assert.equal(summary.data.count,2);assert.equal(summary.data.sales,26750)}finally{await stopChild(child);rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200})}});
