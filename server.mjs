@@ -162,19 +162,54 @@ function postJournal(description,reference,lines,accountingDate=null){
 function postSale(invoiceId){
   const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
   if(!sale)inputError('الفاتورة غير موجودة');
-  if(sale.source==='pos')db.prepare('UPDATE sale_items SET loaded_qty=qty WHERE invoice_id=?').run(invoiceId);
   
-  const items=db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoiceId);
-  let totalCost=0;
-  for(const item of items){
-    const cost=item.cost_snapshot ?? erp.inventoryCost(item.product_id,item.qty);
-    db.prepare('UPDATE sale_items SET cost_snapshot=?,cost_total=? WHERE id=?').run(cost,item.qty * cost,item.id);
-    totalCost += (item.qty * cost);
-  }
+  const postingKey=`SALE:${sale.invoice_no}:${sale.id}`;
+  const existing=db.prepare('SELECT entry_id FROM journal_postings WHERE posting_key=?').get(postingKey);
+  if(existing)return {id:sale.id,entry_id:existing.entry_id,status:'already_posted'};
 
-  const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
-  postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',totalCost,0],['102',0,totalCost]]);
-  erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
+  return transaction(()=>{
+    if(sale.source==='pos')db.prepare('UPDATE sale_items SET loaded_qty=qty WHERE invoice_id=?').run(invoiceId);
+    
+    const items=db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoiceId);
+    let totalCost=0;
+    for(const item of items){
+      const cost=item.cost_snapshot ?? erp.inventoryCost(item.product_id,item.qty);
+      db.prepare('UPDATE sale_items SET cost_snapshot=?,cost_total=? WHERE id=?').run(cost,item.qty * cost,item.id);
+      totalCost += (item.qty * cost);
+    }
+
+    const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
+    const entryId=postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',totalCost,0],['102',0,totalCost]]);
+    
+    db.prepare('INSERT INTO journal_postings(posting_key,entry_id,created_at) VALUES(?,?,?)').run(postingKey,entryId,new Date().toISOString());
+    erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
+    return {id:sale.id,entry_id:entryId,status:'posted'};
+  });
+}
+
+function postPurchase(invoiceId){
+  const invoice=db.prepare('SELECT * FROM purchase_invoices WHERE id=?').get(invoiceId);
+  if(!invoice)inputError('الفاتورة غير موجودة');
+
+  const postingKey=`PURCHASE:${invoice.invoice_no}:${invoice.id}`;
+  const existing=db.prepare('SELECT entry_id FROM journal_postings WHERE posting_key=?').get(postingKey);
+  if(existing)return {id:invoice.id,entry_id:existing.entry_id,status:'already_posted'};
+
+  return transaction(()=>{
+    const items=db.prepare('SELECT * FROM purchase_items WHERE invoice_id=?').all(invoiceId);
+    let totalNet=0;
+    for(const item of items){
+      inventory(item.product_id,invoice.warehouse_id,item.qty,'purchase',invoice.invoice_no,item.line_total);
+      totalNet += item.line_total;
+    }
+
+    const paid=invoice.paid||0,cash=invoice.payment_method==='bank'?'103':'101';
+    const entryId=postJournal('فاتورة شراء '+invoice.invoice_no,invoice.invoice_no,[['102',invoice.net,0],['101',0,paid],['201',0,invoice.net-paid]]);
+    
+    db.prepare('INSERT INTO journal_postings(posting_key,entry_id,created_at) VALUES(?,?,?)').run(postingKey,entryId,new Date().toISOString());
+    erp.audit('purchase-posted',invoiceId,{invoice_no:invoice.invoice_no});
+    return {id:invoice.id,entry_id:entryId,status:'posted'};
+  });
 }
 const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
