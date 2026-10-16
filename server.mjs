@@ -60,7 +60,7 @@ function migrate(){
         -- 3. Inventory & Warehouses
         CREATE TABLE IF NOT EXISTS warehouses(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, location TEXT);
         CREATE TABLE IF NOT EXISTS units(id TEXT PRIMARY KEY, name TEXT NOT NULL, abbreviation TEXT);
-        CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY, name TEXT NOT NULL, barcode TEXT UNIQUE, unit_id TEXT REFERENCES units(id), category TEXT, cost INTEGER DEFAULT 0 CHECK(cost>=0), price INTEGER NOT NULL CHECK(price>=0), min_stock INTEGER DEFAULT 0, emoji TEXT DEFAULT '📦');
+        CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY, name TEXT NOT NULL, barcode TEXT UNIQUE, unit_id TEXT REFERENCES units(id), category TEXT, cost INTEGER DEFAULT 0 CHECK(cost>=0), price INTEGER NOT NULL CHECK(price>=0), min_stock INTEGER DEFAULT 0, emoji TEXT DEFAULT '📦', archived INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS product_warehouse(product_id TEXT NOT NULL REFERENCES products(id), warehouse_id INTEGER NOT NULL REFERENCES warehouses(id), stock INTEGER DEFAULT 0 CHECK(stock>=0), PRIMARY KEY(product_id, warehouse_id));
         CREATE TABLE IF NOT EXISTS inventory_moves(id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT NOT NULL REFERENCES products(id), warehouse_id INTEGER REFERENCES warehouses(id), delta INTEGER NOT NULL, type TEXT CHECK(type IN ('purchase','sale','transfer','adjustment','return')), reference TEXT, date TEXT NOT NULL, created_at TEXT NOT NULL);
 
@@ -111,19 +111,19 @@ migrate();
 db.prepare('SELECT e.reference FROM journal_entries e LIMIT 0').all();
 const runtimeBuild=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'server.mjs'))).update(fs.readFileSync(path.join(root,'erp.mjs'))).digest('hex').slice(0,16);
 
-// Initial Data for Testing
-const initData=()=>{
-    const users=db.prepare('INSERT OR IGNORE INTO users(id,username,password,full_name,role,created_at) VALUES(?,?,?,?,?,?)');
+// Initial Setup (Structure only)
+const initSystem = () => {
+    const users = db.prepare('INSERT OR IGNORE INTO users(id,username,password,full_name,role,created_at) VALUES(?,?,?,?,?,?)');
     users.run('u1','admin','admin123','Administrator','admin',new Date().toISOString());
     
-    const units=db.prepare('INSERT OR IGNORE INTO units(id,name,abbreviation) VALUES(?,?,?)');
+    const units = db.prepare('INSERT OR IGNORE INTO units(id,name,abbreviation) VALUES(?,?,?)');
     units.run('pc','Piece','Pc');
     units.run('kg','Kilogram','Kg');
 
-    const warehouses=db.prepare('INSERT OR IGNORE INTO warehouses(name,location) VALUES(?,?)');
-    if(!db.prepare('SELECT id FROM warehouses LIMIT 1').get())warehouses.run('Main Warehouse','Central');
+    const warehouses = db.prepare('INSERT OR IGNORE INTO warehouses(name,location) VALUES(?,?)');
+    if(!db.prepare('SELECT id FROM warehouses LIMIT 1').get()) warehouses.run('Main Warehouse','Central');
 
-    const accounts=db.prepare('INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,?,?)');
+    const accounts = db.prepare('INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,?,?)');
     accounts.run('1','1000','Assets','asset',null);
     accounts.run('101','1010','Cash','asset','1');
     accounts.run('102','1020','Inventory','asset','1');
@@ -136,12 +136,8 @@ const initData=()=>{
     accounts.run('401','4010','Sales','revenue','4');
     accounts.run('5','5000','Expenses','expense',null);
     accounts.run('501','5010','Cost of Goods Sold','expense','5');
-
-    const partners=db.prepare('INSERT OR IGNORE INTO partners(id,name,type,account_id) VALUES(?,?,?,?)');
-    partners.run('p1','Default Supplier','supplier','201');
-    partners.run('c1','Walk-in Customer','customer','101');
 };
-initData();
+initSystem();
 
 db.exec(`CREATE TABLE IF NOT EXISTS cash_vouchers(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('receipt','payment')), cash_account TEXT NOT NULL REFERENCES accounts(id), counterpart TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL CHECK(amount>0), description TEXT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), date TEXT NOT NULL)`);
 function postJournal(description,reference,lines,accountingDate=null){
@@ -163,7 +159,7 @@ function postSale(invoiceId){
  postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',cost,0],['102',0,cost]]);
  erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
 }
-const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
+const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
 function readJSON(body){try{const value=JSON.parse(body||'{}');if(!value||Array.isArray(value)||typeof value!=='object')inputError('بيانات JSON غير صحيحة');return value}catch{inputError('بيانات JSON غير صحيحة')}}
@@ -237,15 +233,22 @@ const handler=(req,res)=>{
  }
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
- if(req.method==='POST'&&p==='/api/products'){
- const v=readJSON(body),id=String(v.id||'').trim(),name=String(v.name||'').trim(),price=Number(v.price),cost=Number(v.cost||0);
- if(!id||!name||!Number.isSafeInteger(price)||price<0||!Number.isSafeInteger(cost)||cost<0)inputError('الرمز والاسم والسعر والتكلفة مطلوبة بصيغة صحيحة');
- if(!Number.isSafeInteger(Number(v.min_stock||0))||Number(v.min_stock||0)<0)inputError('حد الرصيد غير صحيح');
- if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,String(v.barcode||'')))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
- if(v.unit_id&&!db.prepare('SELECT id FROM units WHERE id=?').get(String(v.unit_id)))inputError('الوحدة غير موجودة');
- db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null);
- return send(res,201,{ok:true,id});
- }
+   if(req.method==='DELETE'&&p==='/api/products'){
+    const id=String(url.searchParams.get('id')||'').trim();
+    if(!id)inputError('معرف المادة مطلوب');
+    transaction(()=>{
+      const hasMoves=db.prepare('SELECT id FROM inventory_moves WHERE product_id=? LIMIT 1').get(id);
+      const hasSales=db.prepare('SELECT id FROM sale_items WHERE product_id=? LIMIT 1').get(id);
+      const hasPurchases=db.prepare('SELECT id FROM purchase_items WHERE product_id=? LIMIT 1').get(id);
+      if(hasMoves||hasSales||hasPurchases){
+        db.prepare('UPDATE products SET archived=1 WHERE id=?').run(id);
+        return send(res,200,{ok:true,archived:true,message:'تمت أرشفة المادة لوجود حركات مرتبطة'});
+      }
+      db.prepare('DELETE FROM product_warehouse WHERE product_id=?').run(id);
+      db.prepare('DELETE FROM products WHERE id=?').run(id);
+    });
+    return send(res,200,{ok:true,archived:false,message:'تم حذف المادة نهائياً'});
+  }
  if(req.method==='POST'&&p==='/api/stock/adjust'){
  const v=readJSON(body),qty=Number(v.delta),warehouseId=Number(v.warehouse_id||1);
  if(!v.product_id||!Number.isSafeInteger(qty)||qty===0||!Number.isSafeInteger(warehouseId))inputError('بيانات حركة المخزن غير صحيحة');
