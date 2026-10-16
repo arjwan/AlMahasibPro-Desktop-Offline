@@ -1,6 +1,6 @@
 {
   "name": "al-mahasibpro-desktop-offline",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,9 @@
     "repair:accounts": "node tools/repair-accounting.mjs",
     "test:electron": "node tests/electron.smoke.cjs",
     "demo:create": "node tools/create-demo.mjs",
-    "test:demo": "node tests/demo.smoke.mjs"
+    "test:demo": "node tests/demo.smoke.mjs",
+    "test:scanner": "node tests/scanner-print.smoke.mjs",
+    "test:pos-layout": "node tests/pos-layout.smoke.mjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -50,7 +52,8 @@
       "scanner-qrcode.js",
       "advanced-ui.js",
       "licensing.mjs",
-      "license-public.pem"
+      "license-public.pem",
+      "market-scanner.html"
     ],
     "asar": false,
     "win": {

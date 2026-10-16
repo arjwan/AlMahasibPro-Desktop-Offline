@@ -6,6 +6,8 @@ import net from 'node:net';
 export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
  db.exec(`CREATE TABLE IF NOT EXISTS scanner_pairs(token TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1);
  CREATE TABLE IF NOT EXISTS scanner_events(id INTEGER PRIMARY KEY, token TEXT NOT NULL REFERENCES scanner_pairs(token), barcode TEXT NOT NULL, created_at TEXT NOT NULL);`);
+ for(const [table,name,type] of [['scanner_pairs','last_seen','INTEGER'],['scanner_events','request_id','TEXT']])if(!db.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name===name))db.exec('ALTER TABLE '+table+' ADD COLUMN '+name+' '+type);
+ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS scanner_event_request ON scanner_events(token,request_id) WHERE request_id IS NOT NULL');
  let tlsServer=null,tlsError=null,config=null,listener=null;
  const dir=path.join(path.dirname(dbPath),'tls'),configPath=path.join(dir,'config.json');
  const owner=req=>crypto.createHash('sha256').update(req.sessionId||'').digest('hex');
@@ -23,11 +25,14 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
   if(req.headers.origin&&req.headers.origin!=='https://'+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
   if(!req.socket.encrypted){send(res,403,{error:'الماسح يحتاج HTTPS موثوقاً'});return true}
   const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND active=1 AND expires>?').get(match[1],Date.now());if(!pair){send(res,410,{error:'انتهى الربط'});return true}
-  if(req.method==='GET'&&match[2]==='status'){send(res,200,{ok:true});return true}
+  if(req.method==='GET'&&match[2]==='status'){db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now(),pair.token);send(res,200,{ok:true});return true}
   if(req.method==='POST'&&match[2]==='scan'){
    const v=readJSON(body),barcode=String(v.barcode||'').trim();if(!barcode||barcode.length>256)inputError('باركود غير صحيح');
+   const requestId=v.request_id===undefined?null:String(v.request_id);if(requestId!==null&&!/^[a-zA-Z0-9-]{16,100}$/.test(requestId))inputError('معرف المسح غير صحيح');
+   db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now(),pair.token);
+   if(requestId){const prior=db.prepare('SELECT id,barcode FROM scanner_events WHERE token=? AND request_id=?').get(pair.token,requestId);if(prior){if(prior.barcode!==barcode)inputError('معرف المسح مستخدم لباركود آخر');send(res,200,{ok:true,id:prior.id});return true}}
    if(db.prepare('SELECT COUNT(*) AS n FROM scanner_events WHERE token=?').get(pair.token).n>=10000)inputError('امتلأت قائمة المسح؛ أنشئ ربطاً جديداً');
-   const id=Number(db.prepare('INSERT INTO scanner_events(token,barcode,created_at) VALUES(?,?,?)').run(pair.token,barcode,new Date().toISOString()).lastInsertRowid);send(res,200,{ok:true,id});return true;
+   const id=Number(db.prepare('INSERT INTO scanner_events(token,barcode,created_at,request_id) VALUES(?,?,?,?)').run(pair.token,barcode,new Date().toISOString(),requestId).lastInsertRowid);send(res,200,{ok:true,id});return true;
   }
   send(res,405,{error:'الطريقة غير مدعومة'});return true;
  }
@@ -47,7 +52,7 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
   const poll=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(poll|revoke)$/);
   if(poll){const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND owner=? AND active=1 AND expires>?').get(poll[1],owner(req),Date.now());if(!pair){send(res,410,{error:'الربط غير صالح لهذه الجلسة'});return true}
    if(post&&poll[2]==='revoke'){db.prepare('UPDATE scanner_pairs SET active=0 WHERE token=?').run(pair.token);send(res,200,{ok:true});return true}
-   if(get&&poll[2]==='poll'){const since=Number(new URL(req.url,'http://localhost').searchParams.get('since')||0);if(!Number.isSafeInteger(since)||since<0)inputError('مؤشر المسح غير صحيح');send(res,200,{events:db.prepare('SELECT id,barcode,created_at FROM scanner_events WHERE token=? AND id>? ORDER BY id LIMIT 100').all(pair.token,since)});return true}
+   if(get&&poll[2]==='poll'){const since=Number(new URL(req.url,'http://localhost').searchParams.get('since')||0);if(!Number.isSafeInteger(since)||since<0)inputError('مؤشر المسح غير صحيح');send(res,200,{phone_connected:!!pair.last_seen&&Date.now()-pair.last_seen<15000,last_seen:pair.last_seen||null,events:db.prepare('SELECT id,barcode,created_at FROM scanner_events WHERE token=? AND id>? ORDER BY id LIMIT 100').all(pair.token,since)});return true}
   }
   return false;
  }

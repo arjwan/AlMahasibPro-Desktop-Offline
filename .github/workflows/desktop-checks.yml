@@ -34,8 +34,10 @@ jobs:
       - run: npx playwright install chromium
       - run: node tests/ui.smoke.mjs
       - run: node tests/stock-ui.smoke.mjs
+      - run: npm run test:scanner
       - run: npm run demo:create
       - run: npm run test:demo
+      - run: npm run test:pos-layout
       - name: Build Windows installer after all checks
         run: npx electron-builder --win nsis --x64 --publish never
       - name: Install, launch and upgrade the built Windows package

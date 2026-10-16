@@ -1,0 +1,19 @@
+import {chromium} from 'playwright';
+import {startServer} from './helpers/server.mjs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const dir=path.resolve(process.argv[2]||'work/demo-market-large-0.5.2');
+const server=await startServer(path.join(dir,'company.sqlite'));let browser;
+try{
+ browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000},hasTouch:true}),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(server.base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});await page.evaluate(()=>window.go('pos'));await page.locator('.product').first().waitFor();
+ // Fill a long unsaved invoice using real product buttons (no posted transactions).
+ const ids=await page.evaluate(()=>fetch('/api/products').then(r=>r.json()).then(rows=>rows.filter(x=>x.available>0).slice(0,24).map(x=>x.id)));for(const id of ids)await page.locator('.product[data-id="'+id+'"]').click();
+ const state=()=>page.evaluate(()=>{const products=document.getElementById('products'),bill=document.querySelector('.bill-scroll'),header=document.querySelector('.top').getBoundingClientRect(),total=document.getElementById('net').getBoundingClientRect(),save=document.getElementById('print').getBoundingClientRect();return {products:products.scrollTop,bill:bill.scrollTop,productOverflow:products.scrollHeight>products.clientHeight,billOverflow:bill.scrollHeight>bill.clientHeight,header:header.top,total:total.top,save:save.top,saveBottom:save.bottom,height:innerHeight,body:scrollY,touch:getComputedStyle(bill).touchAction}});
+ const initial=await state();assert.equal(initial.productOverflow,true);assert.equal(initial.billOverflow,true);
+ await page.locator('#products').hover();await page.mouse.wheel(0,1000);await page.waitForFunction(()=>document.getElementById('products').scrollTop>0);const movedProducts=await state();assert.equal(movedProducts.bill,initial.bill);assert.equal(movedProducts.header,initial.header);assert.equal(movedProducts.body,initial.body);
+ await page.locator('.bill-scroll').hover();await page.mouse.wheel(0,800);await page.waitForFunction(()=>document.querySelector('.bill-scroll').scrollTop>0);const movedBill=await state();assert.equal(movedBill.products,movedProducts.products);assert.equal(movedBill.header,initial.header);assert.equal(movedBill.total,initial.total);assert.equal(movedBill.save,initial.save);assert.ok(movedBill.saveBottom<=movedBill.height);assert.equal(movedBill.touch,'pan-y');console.log('POS independent product/invoice scroll, fixed header and fixed total/save: PASS');
+ // Real touch drag through Chromium's input path on the invoice pane.
+ const cdp=await context.newCDPSession(page),box=await page.locator('.bill-scroll').boundingBox();await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+30}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:box.x+box.width/2,y:box.y+150}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await page.waitForFunction(previous=>document.querySelector('.bill-scroll').scrollTop<previous,movedBill.bill);assert.equal((await state()).header,initial.header);console.log('POS touch scroll keeps header and product pane independent: PASS');
+ await page.setViewportSize({width:390,height:844});await page.locator('#print').scrollIntoViewIfNeeded();const mobile=await state();assert.ok(mobile.saveBottom<=844);assert.deepEqual(errors,[]);console.log('POS narrow viewport keeps invoice actions reachable: PASS');
+}finally{await browser?.close();await server.stop()}
