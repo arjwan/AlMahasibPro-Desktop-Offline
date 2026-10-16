@@ -48,6 +48,7 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
  function available(product,warehouse){return (db.prepare('SELECT stock FROM product_warehouse WHERE product_id=? AND warehouse_id=?').get(product,warehouse)?.stock||0)-reserved(product,warehouse)}
  function stockValue(){return db.prepare('SELECT p.*,w.warehouse_id,w.stock,h.name AS warehouse,COALESCE((SELECT SUM(r.qty) FROM stock_reservations r WHERE r.product_id=p.id AND r.warehouse_id=w.warehouse_id AND r.active=1 AND r.start<=? AND r.end>=?),0) AS reserved FROM products p JOIN product_warehouse w ON w.product_id=p.id JOIN warehouses h ON h.id=w.warehouse_id ORDER BY p.name,h.id').all(today(),today()).map((x,i,rows)=>{const same=rows.filter(p=>p.id===x.id),total=same.reduce((n,p)=>n+p.stock,0),prefix=rows.slice(0,i).filter(p=>p.id===x.id).reduce((n,p)=>n+p.stock,0);return {...x,available:x.stock-x.reserved,value:total?Number(BigInt(x.book_value||0)*BigInt(prefix+x.stock)/BigInt(total)-BigInt(x.book_value||0)*BigInt(prefix)/BigInt(total)):0}})}
  function one(table,id){const x=db.prepare('SELECT * FROM '+table+' WHERE id=?').get(id);if(!x)inputError('السجل غير موجود');return x}
+ column('document_returns','card_refund','INTEGER NOT NULL DEFAULT 0');
  function postReturn(v){
   periodOpen();const kind=v.kind;if(!['sale','purchase'].includes(kind))inputError('نوع المرتجع غير صحيح');
   const invoiceId=integer(v.invoice_id,'رقم الفاتورة',1),sale=kind==='sale',invoice=one(sale?'sale_invoices':'purchase_invoices',invoiceId);
@@ -87,8 +88,12 @@ export function extendERP({db,dbPath,send,inputError,readJSON,transaction,invent
    db.prepare('INSERT INTO document_return_lines(return_id,item_id,product_id,qty,amount,cost) VALUES(?,?,?,?,?,?)').run(id,l.item.id,l.item.product_id,l.qty,l.amount,l.cost)
   }
   const cash=invoice.payment_method==='bank'?'103':'101';
+  const cardPaid=sale?db.prepare("SELECT COALESCE(SUM(amount),0) AS n FROM payment_transactions WHERE invoice_id=? AND payment_method='card' AND status='success'").get(invoiceId).n:0;
+  const cardReturned=sale?db.prepare("SELECT COALESCE(SUM(card_refund),0) AS n FROM document_returns WHERE kind='sale' AND invoice_id=?").get(invoiceId).n:0;
+  const cardRefund=Math.min(refund,Math.max(0,cardPaid-cardReturned));
+  if(sale)db.prepare('UPDATE document_returns SET card_refund=? WHERE id=?').run(cardRefund,id);
   const carrying=sale?totalCost:purchaseCarrying;
-  const entries=sale?[[cash,0,refund],['104',0,total-refund],['401',total,0],['102',totalCost,0],['501',0,totalCost]]:[['101',refund,0],['201',total-refund,0],['102',0,carrying],['501',Math.max(0,carrying-total),Math.max(0,total-carrying)]];
+  const entries=sale?[[cardPaid?'101':cash,0,refund-cardRefund],['pos-card-clearing',0,cardRefund],['104',0,total-refund],['401',total,0],['102',totalCost,0],['501',0,totalCost]]:[['101',refund,0],['201',total-refund,0],['102',0,carrying],['501',Math.max(0,carrying-total),Math.max(0,total-carrying)]];
   const entry=postJournal('مرتجع '+invoice.invoice_no,ref,entries);db.prepare('UPDATE document_returns SET entry_id=? WHERE id=?').run(entry,id);audit('return',id,{kind,invoiceId,total});return {id,amount:total,entry_id:entry};
  }
  function submitCompany(id){

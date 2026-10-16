@@ -30,6 +30,7 @@
     "files": [
       "electron-main.cjs",
       "server.mjs",
+      "secrets.mjs",
       "desktop-runtime.cjs",
       "accounting-schema.mjs",
       "stock.mjs",

@@ -209,8 +209,9 @@ test('Purchases: supplier numbers, editable dates, repeated materials, atomic po
 
 test('Purchases: preliminary invoices edit without posting, then approve exactly once',async()=>{
  const f=await fixture();try{await f.login();await created(f,'/api/products',{id:'DRAFTBUY',name:'مادة أولية',price:10,cost:0});
- const v={status:'draft',supplier_invoice_no:'DRAFT-1',partner_id:'p1',paid:0,lines:[{product_id:'DRAFTBUY',qty:2,cost:50}]},draft=await created(f,'/api/purchases',v);
- assert.equal(draft.status,'draft');assert.equal((await f.request('/api/purchases')).data.length,0);assert.equal((await f.request('/api/journal')).data.length,0);assert.equal((await f.request('/api/products')).data[0].stock,0);assert.equal((await f.request('/api/partners/statement?id=p1')).data.length,0);
+ const supplier=await created(f,'/api/partners',{name:'Draft supplier',type:'supplier'});
+ const v={status:'draft',supplier_invoice_no:'DRAFT-1',partner_id:supplier.id,paid:0,lines:[{product_id:'DRAFTBUY',qty:2,cost:50}]},draft=await created(f,'/api/purchases',v);
+ assert.equal(draft.status,'draft');assert.equal((await f.request('/api/purchases')).data.length,0);assert.equal((await f.request('/api/journal')).data.length,0);assert.equal((await f.request('/api/products')).data[0].stock,0);assert.equal((await f.request('/api/partners/statement?id='+supplier.id)).data.length,0);
  const edited=await created(f,'/api/purchases',{...v,draft_id:draft.draft_id,expected_revision:1,lines:[{product_id:'DRAFTBUY',qty:3,cost:50}]});assert.equal(edited.revision,2);
  assert.equal((await f.request('/api/purchases','POST',{...v,draft_id:draft.draft_id,expected_revision:1})).status,400);
  await f.stop();await f.start();await f.login();const saved=(await f.request('/api/purchases/drafts')).data[0];assert.equal(saved.payload.lines[0].qty,3);

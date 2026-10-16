@@ -8,3 +8,6 @@ out/
 .env.*
 !.env.example
 *.log
+
+work/
+*.secrets-key
