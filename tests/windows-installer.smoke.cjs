@@ -6,6 +6,7 @@ if(process.platform!=='win32')throw Error('Windows installer acceptance must run
 const root=path.resolve(__dirname,'..'),version=require('../package.json').version;
 const installer=path.join(root,'dist',`AlMahasibPro-Offline-Setup-${version}-x64.exe`);
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'alma-installer-')),install=path.join(dir,'application'),profile=path.join(dir,'profile');
+fs.mkdirSync(profile,{recursive:true});
 const executable=path.join(install,'AlMahasibPro Offline.exe'),dbPath=path.join(profile,'company.sqlite');
 async function installApp(){await new Promise((resolve,reject)=>{const child=spawn(installer,['/S','/D='+install],{windowsHide:true});const timer=setTimeout(()=>{try{execFileSync('taskkill',['/PID',String(child.pid),'/T','/F'])}catch{}reject(Error('Installer timed out'))},120000);child.once('error',e=>{clearTimeout(timer);reject(e)});child.once('exit',code=>{clearTimeout(timer);code===0?resolve():reject(Error('Installer exit '+code))})});assert.ok(fs.existsSync(executable),'Installed executable missing')}
 async function launch(){
