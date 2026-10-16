@@ -42,7 +42,7 @@ function migrate(){
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
     const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
-    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji','archived'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)db.prepare('VACUUM INTO ?').run(backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -89,7 +89,7 @@ function migrate(){
     for(const [column,definition] of [
       ['barcode','TEXT'],['unit_id','TEXT'],['category','TEXT'],
       ['cost','INTEGER NOT NULL DEFAULT 0'],['price','INTEGER NOT NULL DEFAULT 0'],
-      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT']
+      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT'],['archived','INTEGER NOT NULL DEFAULT 0']
     ]){
       if(!productColumns.has(column)){
         log('Adding missing products column: '+column);
