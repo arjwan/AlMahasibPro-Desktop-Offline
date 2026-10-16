@@ -334,7 +334,7 @@ const handleSupplier=supplierReports({db,inputError,send});
 stockERPService=stockERP({db,inputError,inventory,erp,transaction,postJournal,send,readJSON});
 const handler=(req,res)=>{
  let body='';req.on('data',chunk=>{body+=chunk;if(body.length>42e6)req.destroy()});
- req.on('end',()=>{
+ req.on('end',async()=>{
  try{
  const url=new URL(req.url,'http://localhost'),p=url.pathname;
  erp.setActor(null);
