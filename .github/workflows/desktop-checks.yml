@@ -38,6 +38,8 @@ jobs:
       - run: npm run test:demo
       - name: Build Windows installer after all checks
         run: npx electron-builder --win nsis --x64 --publish never
+      - name: Install, launch and upgrade the built Windows package
+        run: node tests/windows-installer.smoke.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: AlMahasibPro-Offline-Windows
