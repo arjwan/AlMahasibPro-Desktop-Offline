@@ -103,7 +103,8 @@ function migrate(){
     }
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_reference ON journal_entries(reference);`);
+    db.exec(`DROP INDEX IF EXISTS idx_journal_reference;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_ref_date ON journal_entries(reference, date);`);
     if(currentVersion<2)db.exec('PRAGMA user_version=2');
 }
 migrate();
@@ -144,15 +145,17 @@ function postJournal(description,reference,lines,accountingDate=null){
   erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
   const valid=lines.filter(x=>x[1]||x[2]);
   const debit=valid.reduce((n,x)=>n+x[1],0),credit=valid.reduce((n,x)=>n+x[2],0);
-  if(!Number.isSafeInteger(debit)||debit!==credit)inputError('القيد غير متوازن: دبيته '+debit+' كريدت '+credit);
+  if(!Number.isSafeInteger(debit)||debit!==credit)inputError(`القيد غير متوازن: مدين ${debit}, دائن ${credit}`);
   if(!valid.length)return null;
   
-  if(db.prepare('SELECT id FROM journal_entries WHERE reference=?').get(reference)){
-    throw new Error('هذا المرجع مستخدم مسبقاً: '+reference);
+  const now=new Date().toISOString();
+  const dateVal=accountingDate||now.slice(0,10);
+  
+  if(db.prepare('SELECT id FROM journal_entries WHERE reference=? AND date=?').get(reference,dateVal)){
+    throw new Error(`هذا المرجع ${reference} مستخدم مسبقاً في تاريخ ${dateVal}`);
   }
 
-  const now=new Date().toISOString();
-  const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(accountingDate||now.slice(0,10),description,reference,now).lastInsertRowid);
+  const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(dateVal,description,reference,now).lastInsertRowid);
   for(const [account,d,c] of valid)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,account,d,c,description);
   return id;
 }
