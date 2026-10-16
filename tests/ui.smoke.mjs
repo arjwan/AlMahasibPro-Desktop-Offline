@@ -11,6 +11,28 @@ try{
  await page.goto(base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});
  for(const route of ['sales','purchases','stock','customers','suppliers','accounts','banks','reports','branches','agents','settings','devices','returns','shifts','pos','home']){
   await page.evaluate(async p=>await window.go(p),route);
+  let checkedFields=0;
+  const controls=page.locator((route==='pos'?'#pos':route==='home'?'#home':'#placeholder')+' input, '+(route==='pos'?'#pos':route==='home'?'#home':'#placeholder')+' textarea, '+(route==='pos'?'#pos':route==='home'?'#home':'#placeholder')+' select');
+  for(let i=0;i<await controls.count();i++){
+   const control=controls.nth(i);if(!await control.isVisible())continue;
+   const info=await control.evaluate(el=>({id:el.id,tag:el.tagName,type:el.type,readOnly:el.readOnly,disabled:el.disabled,value:el.value,maxLength:el.maxLength,checked:el.checked}));
+   if(info.disabled||info.readOnly){console.log('FIELD PROTECTED',route,info.id);continue}
+   if(info.type==='file'){console.log('FIELD FILE PICKER',route,info.id);continue}
+   if(info.tag==='SELECT'){
+    const options=await control.locator('option:not(:disabled)').evaluateAll(rows=>rows.filter(x=>!x.closest('optgroup')?.disabled).map(x=>x.value));
+    if(options.length){await control.selectOption(options.find(x=>x!==info.value)??options[0]);await control.selectOption(info.value)}else continue;
+   }else if(['checkbox','radio'].includes(info.type)){
+    if(info.type==='radio')continue;await control.setChecked(!info.checked);await control.setChecked(info.checked);
+   }else{
+    if(!await control.isEditable())throw Error('Input is unexpectedly blocked: '+route+' '+info.id);
+    const sample=({number:'123',date:'2030-01-02',time:'12:34',month:'2030-01',week:'2030-W02','datetime-local':'2030-01-02T12:34',color:'#123456',email:'review@example.test',url:'https://example.test',range:'50'})[info.type]||'فحص إدخال 123';
+    await control.fill(sample.slice(0,info.maxLength>0?info.maxLength:undefined));
+    if(!await control.inputValue())throw Error('Input did not accept value: '+route+' '+info.id);
+    await control.fill(info.value);
+   }
+   checkedFields++;
+  }
+  console.log('EDITABLE FIELDS PASS',route,checkedFields);
   const content=await page.locator(route==='pos'?'#pos':route==='home'?'#home':'#placeholder').innerText();if(/تعذر تحميل|خطأ في الواجهة|جار تحميل|تم تجهيز تصميم القسم/.test(content))throw Error(route+': '+content);console.log('PAGE PASS',route,content.length);
  }
 
