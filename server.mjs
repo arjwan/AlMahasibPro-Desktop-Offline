@@ -401,6 +401,7 @@ const handler=(req,res)=>{
  inventory(product.id,warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية'),value);
  postJournal('تسوية مخزون', 'ADJ-'+crypto.randomUUID(),qty>0?[['102',value,0],['3',0,value]]:[['501',value,0],['102',0,value]]);
  erp.audit('stock-adjust',product.id,{qty,warehouseId});
+ return {ok:true};
  });
  return send(res,201,{ok:true});
  }
@@ -588,7 +589,7 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
  if(req.method==='POST'&&p==='/api/journal'){
  const v=readJSON(body),lines=v.lines;
- if(/^(S-|P-|R-|V-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
+ if(/^(S-|P-|R-|V-|PAY-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
  erp.periodOpen(v.date||new Date().toISOString().slice(0,10));
  if(!Array.isArray(lines)||lines.length<2)inputError('القيد يحتاج سطرين على الأقل');
  const result=transaction(()=>{

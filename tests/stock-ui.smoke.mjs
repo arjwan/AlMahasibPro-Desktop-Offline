@@ -1,6 +1,6 @@
 const {chromium:playwright}=await import(process.env.ALMAHASIB_PLAYWRIGHT||'playwright');
 import {fileURLToPath} from 'node:url';
-import {spawn} from 'node:child_process';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {spawn} from 'node:child_process';import {mkdtempSync,rmSync,mkdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 const root=fileURLToPath(new URL('../',import.meta.url)),dir=mkdtempSync(join(tmpdir(),'alma-ui-'));let logs='';const child=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,ALMAHASIB_DB:join(dir,'test.sqlite'),PORT:'0'},stdio:['ignore','pipe','pipe']});child.stderr.on('data',x=>logs+=x);const base=await new Promise((resolve,reject)=>{child.stdout.on('data',x=>{const m=String(x).match(/http:\/\/127.0.0.1:\d+/);if(m)resolve(m[0])});child.on('exit',()=>reject(Error(logs)))});let browser;
 try{
  browser=await playwright.launch({executablePath:process.env.ALMAHASIB_CHROMIUM||undefined,args:process.env.ALMAHASIB_CHROMIUM&&process.platform!=='win32'?['--no-sandbox','--disable-gpu','--disable-software-rasterizer','--disable-dev-shm-usage','--no-zygote','--single-process']:[],headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000}});const page=await context.newPage();const errors=[];page.on('pageerror',x=>{errors.push(x.message);console.log('BROWSER ERROR',x.message)});page.on('dialog',d=>{console.log('DIALOG',d.message());d.accept()});
@@ -21,6 +21,7 @@ try{
  await page.locator('.stk-balance summary').click();const popupEvent=page.waitForEvent('popup');await page.locator('.stk-card').click();const popup=await popupEvent;await popup.waitForLoadState();if(!(await popup.locator('body').innerText()).includes('24'))throw Error('Stock card print missing balance');await popup.close();
  await page.locator('#stk-meta-price').fill('30');await submit('stk-meta-form');await page.locator('#stk-label-code').fill('BOX-12');
  const labelEvent=page.waitForEvent('popup');await page.locator('#stk-label-print').click();const label=await labelEvent;await label.waitForLoadState();if(!(await label.locator('.stock-label').innerText()).includes('360'))throw Error('Label must use live carton price');if(await label.locator('svg rect').count()<10)throw Error('Barcode not rendered');await label.close();
- await page.screenshot({path:join(root,'../stock-review.png'),fullPage:true});
+ const evidence=join(root,'work','readiness');mkdirSync(evidence,{recursive:true});
+ await page.screenshot({path:join(evidence,'stock-review.png'),fullPage:true});
  if(errors.length)throw Error(errors.join('; '));console.log('STOCK UI: COLLAPSED SEARCH, OPEN, REPEATED SCANS, DRAFT, APPROVAL, CARD PRINT AND LIVE BARCODE LABEL PASS');
 }finally{if(browser)await browser.close();const exited=new Promise(r=>child.once('exit',r));child.kill();await exited;rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:200})}
