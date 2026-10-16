@@ -42,7 +42,9 @@ function migrate(){
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
     const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
-    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const movementSchema=existingTables.has('inventory_moves')?db.prepare('PRAGMA table_info(inventory_moves)').all().map(x=>x.name):[];
+    const providerSchema=existingTables.has('payment_providers')?db.prepare('PRAGMA table_info(payment_providers)').all().map(x=>x.name):[];
+    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name))||(existingTables.has('inventory_moves')&&['type','reference','date','created_at'].some(name=>!movementSchema.includes(name)))||(existingTables.has('payment_providers')&&['api_key_encrypted','webhook_secret_encrypted'].some(name=>!providerSchema.includes(name)));
     if(schemaChange&&fs.statSync(dbPath).size>0)db.prepare('VACUUM INTO ?').run(backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -85,6 +87,14 @@ function migrate(){
     // Legacy databases may advertise v2 while still missing columns.
     // Reconcile column-by-column before creating dependent indexes.
     const columns=table=>new Set(db.prepare('PRAGMA table_info('+table+')').all().map(c=>c.name));
+    // Reconcile old movement tables before the invoice engine writes to them.
+    const movementColumns=columns('inventory_moves');
+    for(const [column,definition] of [['type','TEXT'],['reference','TEXT'],['date','TEXT'],['created_at','TEXT']]){
+      if(!movementColumns.has(column)){
+        log('Adding missing inventory_moves column: '+column);
+        db.exec('ALTER TABLE inventory_moves ADD COLUMN '+column+' '+definition);
+      }
+    }
     const productColumns=columns('products');
     for(const [column,definition] of [
       ['barcode','TEXT'],['unit_id','TEXT'],['category','TEXT'],
@@ -188,6 +198,15 @@ if(!db.prepare("SELECT sql FROM sqlite_master WHERE name='payment_transactions'"
  }catch(e){db.exec('ROLLBACK');throw e}
 }
 db.prepare("INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES('pos-card-clearing','POS-CARD','Card clearing','asset','1')").run();
+// Existing installations can have plaintext legacy provider columns only.
+// Add encrypted columns without copying plaintext into them; preserve legacy values.
+const providerColumns=new Set(db.prepare('PRAGMA table_info(payment_providers)').all().map(x=>x.name));
+for(const column of ['api_key_encrypted','webhook_secret_encrypted']){
+ if(!providerColumns.has(column)){
+  log('Adding missing payment_providers column: '+column);
+  db.exec('ALTER TABLE payment_providers ADD COLUMN '+column+' TEXT');
+ }
+}
 migrateProviderSecrets(db,dbPath);
 function postJournal(description,reference,lines,accountingDate=null){
   erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
