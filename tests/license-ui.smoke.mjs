@@ -1,0 +1,18 @@
+import {chromium} from 'playwright';
+import {startServer} from './helpers/server.mjs';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import assert from 'node:assert/strict';
+const dir=mkdtempSync(join(tmpdir(),'alma-license-ui-')),token='eyJwcm9kdWN0IjoiZGVtbyJ9.c2lnbmF0dXJl';
+const server=await startServer(join(dir,'company.sqlite'));let browser;
+try{
+ browser=await chromium.launch({headless:true});const context=await browser.newContext(),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.addInitScript(token=>{window.copiedLicenseId=null;window.desktopLicensing={copyId:async id=>{window.copiedLicenseId=id;return {ok:true}},pasteToken:async()=>token}},token);
+ await page.goto(server.base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});
+ const machine=await page.locator('#erp-license-machine').inputValue();assert.match(machine,/^[a-f0-9]{64}$/);assert.equal(await page.locator('#erp-license-machine').getAttribute('dir'),'ltr');await page.locator('#erp-license-copy').click();await page.waitForFunction(()=>document.getElementById('erp-license-message').textContent.includes('تم نسخ'));assert.equal(await page.evaluate(()=>window.copiedLicenseId),machine);
+ await page.locator('#erp-license-paste').click();await page.waitForFunction(token=>document.getElementById('erp-license-token').value===token,token);console.log('LICENSE UI explicit copy and paste actions: PASS');
+ await page.locator('#erp-license-token').fill('');const file=join(dir,'license.token');writeFileSync(file,'\ufeff'+token+'\r\n');await page.locator('#erp-license-file').setInputFiles(file);await page.waitForFunction(token=>document.getElementById('erp-license-token').value===token,token);
+ let submitted;await page.route('**/api/license/activate',async route=>{submitted=route.request().postDataJSON();await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'Test rejection preserves imported token'})})});await page.locator('#erp-license-activate').click();await page.waitForFunction(()=>document.getElementById('erp-license-message').textContent.includes('Test rejection'));assert.equal(submitted.token,token);assert.equal(await page.locator('#erp-license-token').inputValue(),token);assert.equal(await page.locator('#erp-license-activate').isEnabled(),true);
+ const bad=join(dir,'bad.txt');writeFileSync(bad,'Not a signed license');await page.locator('#erp-license-file').setInputFiles(bad);await page.waitForFunction(()=>document.getElementById('erp-license-message').textContent.includes('license.token'));assert.deepEqual(errors,[]);console.log('LICENSE UI file import, validation, activation submission and rejection recovery: PASS');
+}finally{await browser?.close();await server.stop();rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}

@@ -1,5 +1,5 @@
 const {waitForOwnServer}=require('./desktop-runtime.cjs');const crypto=require('node:crypto');
-const {app,BrowserWindow,dialog,ipcMain}=require('electron');const {spawn}=require('node:child_process');const path=require('node:path');const fs=require('node:fs');let server;let window;
+const {app,BrowserWindow,dialog,ipcMain,clipboard,Menu}=require('electron');const {spawn}=require('node:child_process');const path=require('node:path');const fs=require('node:fs');let server;let window;
 process.on('uncaughtException',(e)=>{
     try{
         const data=app ? app.getPath('userData') : (process.env.APPDATA ? path.join(process.env.APPDATA,'AlMahasibPro Offline') : 'C:\\\\temp\\\\electron-error.log');
@@ -51,6 +51,10 @@ app.whenReady().then(async()=>{
     }
 
     window=new BrowserWindow({width:1450,height:900,minWidth:1000,minHeight:680,webPreferences:{preload:path.join(__dirname,'desktop-preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    function licenseFrame(event){if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||event.senderFrame.url!==`http://127.0.0.1:${port}/`)throw Error('طلب غير مسموح')}
+    ipcMain.handle('license-copy-id',(event,id)=>{licenseFrame(event);if(typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))throw Error('معرّف الجهاز غير صحيح');clipboard.writeText(id);return {ok:true}});
+    ipcMain.handle('license-paste-token',event=>{licenseFrame(event);const token=clipboard.readText().trim();if(token.length>8192||!/^[-_A-Za-z0-9]+\.[-_A-Za-z0-9]+$/.test(token))throw Error('الحافظة لا تحتوي على رمز ترخيص صالح');return token});
+    window.webContents.on('context-menu',(_event,params)=>{const items=[];if(params.isEditable)items.push({label:'قص',role:'cut',enabled:params.editFlags.canCut});if(params.selectionText||params.isEditable)items.push({label:'نسخ',role:'copy',enabled:params.editFlags.canCopy});if(params.isEditable)items.push({label:'لصق',role:'paste',enabled:params.editFlags.canPaste});if(items.length){items.push({label:'تحديد الكل',role:'selectAll'});Menu.buildFromTemplate(items).popup({window})}});
     ipcMain.handle('supplier-report-pdf',async(event,query)=>{
       if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||event.senderFrame.url!==`http://127.0.0.1:${port}/`||typeof query!=='string'||query.length>1000)throw Error('طلب غير مسموح');
       const params=new URLSearchParams(query);for(const key of [...params.keys()])if(!['id','from','to'].includes(key))params.delete(key);params.set('format','print');
