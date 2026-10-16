@@ -27,9 +27,6 @@ jobs:
         if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != ''
         shell: pwsh
         run: '[IO.File]::WriteAllText((Join-Path $PWD license-public.pem), $env:ALMAHASIB_LICENSE_PUBLIC_KEY)'
-      - name: Installer blocked without developer verification key
-        if: env.ALMAHASIB_LICENSE_PUBLIC_KEY == ''
-        run: Write-Output 'No release installer will be built until ALMAHASIB_LICENSE_PUBLIC_KEY is provisioned.'
       - run: npm test
       - run: node tests/electron.smoke.cjs
       - run: npx electron tests/electron-report.smoke.cjs
@@ -39,11 +36,9 @@ jobs:
       - run: node tests/stock-ui.smoke.mjs
       - run: npm run demo:create
       - run: npm run test:demo
-      - if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true))
-        name: Build Windows installer after all checks
+      - name: Build Windows installer after all checks
         run: npx electron-builder --win nsis --x64 --publish never
-      - if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true))
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: AlMahasibPro-Offline-Windows
           path: dist/*.exe
