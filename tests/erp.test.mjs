@@ -243,3 +243,11 @@ test('Suppliers: detail, filtered opening/closing, draft exclusion, exports and 
  await created(f,'/api/users',{username:'noreport',password:'password123',role:'cashier',modules:['sales']});await f.request('/api/auth/logout','POST',{});await f.login('noreport','password123');assert.equal((await f.request(base)).status,403);assert.equal((await f.request(base+'&format=xlsx')).status,403);
  }finally{await f.cleanup()}
 });
+
+test('ERP: invoice QR uses stored purchase/sale lines and enforces document permissions',async()=>{
+ const f=await fixture();try{await f.login();const supplier=await created(f,'/api/partners',{name:'مورد QR',type:'supplier'});await created(f,'/api/products',{id:'QR-ITEM',name:'جبن QR',barcode:'0012345678905',cost:100,price:150});const purchase=await created(f,'/api/purchases',{partner_id:supplier.id,paid:0,lines:[{product_id:'QR-ITEM',qty:4,cost:100}]});
+ const qr=await f.request('/api/purchases/'+purchase.id+'/qr');assert.equal(qr.status,200);const decoded=await f.request('/api/invoice-qr/decode','POST',{parts:qr.data.parts});assert.equal(decoded.status,200);assert.equal(decoded.data.no,purchase.invoice_no);assert.equal(decoded.data.lines[0].barcode,'0012345678905');assert.equal(decoded.data.lines[0].qty,4);assert.equal(decoded.data.net,400);
+ const sale=await created(f,'/api/invoices',{lines:[{id:'QR-ITEM',qty:2}]});const saleQr=(await f.request('/api/invoices/'+sale.id+'/qr')).data;assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:saleQr.parts})).data.net,300);assert.equal((await f.request('/api/purchases/999999/qr')).status,404);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:['bad']})).status,400);
+ await created(f,'/api/users',{username:'qr-buyer',password:'testpass123',role:'cashier',modules:['purchases']});await f.login('qr-buyer','testpass123');assert.equal((await f.request('/api/purchases/'+purchase.id+'/qr')).status,200);assert.equal((await f.request('/api/invoices/'+sale.id+'/qr')).status,403);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:qr.data.parts})).status,200);
+ }finally{await f.cleanup()}
+});

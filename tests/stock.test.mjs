@@ -94,3 +94,13 @@ test('Stock: sale returns restore original lot and expiry even when returned aft
  await created(f,'/api/stock/documents',payload);assert.equal((await f.request('/api/stock/batches')).data.find(b=>b.product_id==='SR').expiry,'2000-01-01');assert.equal((await f.request('/api/stock/documents','POST',payload)).status,400);
  }finally{await f.cleanup()}
 });
+
+ test('Stock: internal EAN generation preserves manufacturer barcodes and rejects ambiguous codes',async()=>{
+ const f=await fixture();try{await f.login();const codes=new Set();for(let i=0;i<20;i++){const r=await f.request('/api/stock/barcodes/generate','POST',{});assert.equal(r.status,200);const code=r.data.code;assert.match(code,/^20[0-9]{11}$/);assert.equal([...code].reduce((n,d,i)=>n+Number(d)*(i%2?3:1),0)%10,0);assert.ok(!codes.has(code));codes.add(code)}
+ const code=[...codes][0];await created(f,'/api/products',{id:'INTERNAL',name:'مولد',barcode:code,price:100,cost:50});
+ await created(f,'/api/products',{id:'FACTORY',name:'باركود مصنع',barcode:'0012345678905',price:100,cost:50});
+ const rows=(await f.request('/api/products')).data;assert.equal(rows.find(x=>x.id==='FACTORY').barcode,'0012345678905');assert.equal((await f.request('/api/stock/label?code=0012345678905')).data.name,'باركود مصنع');assert.equal((await f.request('/api/stock/label?code='+code)).data.name,'مولد');
+ for(const data of [{id:'DUP',barcode:'0012345678905'},{id:'0012345678905',barcode:'OTHER'},{id:'OTHER',barcode:'FACTORY'}])assert.equal((await f.request('/api/products','POST',{...data,name:'تعارض',price:1})).status,400);
+ await created(f,'/api/stock/barcodes',{product_id:'FACTORY',code:'BOX-FACTORY',factor:12});assert.equal((await f.request('/api/products/import','POST',{rows:[{id:'AMBIG',name:'مرفوض',price:10,barcode:'BOX-FACTORY'}]})).status,400);assert.equal((await f.request('/api/stock/barcodes','POST',{product_id:'INTERNAL',code:'0012345678905',factor:1})).status,400);
+ }finally{await f.cleanup()}
+ });

@@ -1,3 +1,4 @@
+import {encodeInvoiceQrParts,decodeInvoiceQrParts,inspectInvoiceQrPart} from './invoice-qr.mjs';
 import {migrateProviderSecrets} from './secrets.mjs';
 import http from 'node:http';
 import {ensureJournalReference} from './accounting-schema.mjs';
@@ -294,7 +295,7 @@ function paymentSummary(invoice){
  const paid=invoice.paid??(invoice.payment_method==='credit'?0:invoice.net),remaining=Math.max(0,invoice.net-paid-r.amount+r.refund);
  return {...invoice,remaining,payment_status:invoice.status==='held'?'unpaid':remaining===0?'paid':paid>r.refund?'partial':'unpaid'};
 }
-const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
+const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1),barcodes:db.prepare('SELECT code,unit,factor FROM stock_barcodes WHERE product_id=?').all(p.id)}));
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
 function readJSON(body){try{const value=JSON.parse(body||'{}');if(!value||Array.isArray(value)||typeof value!=='object')inputError('بيانات JSON غير صحيحة');return value}catch{inputError('بيانات JSON غير صحيحة')}}
@@ -351,6 +352,17 @@ const handler=(req,res)=>{
  if(cached){if(cached.route!==route||cached.payload!==payload)inputError('معرف العملية مستخدم لطلب مختلف');return send(res,200,JSON.parse(cached.result))}
  operation={key,route,payload};
  }
+ if(req.method==='POST'&&p==='/api/invoice-qr/decode'){
+  try{const v=readJSON(body);if(v.part!==undefined)return send(res,200,inspectInvoiceQrPart(v.part));return send(res,200,decodeInvoiceQrParts(v.parts))}catch(e){return send(res,400,{error:e.message})}
+ }
+ const qrMatch=p.match(/^\/api\/(purchases|invoices)\/([0-9]+)\/qr$/);
+ if(req.method==='GET'&&qrMatch){
+  const purchase=qrMatch[1]==='purchases',id=Number(qrMatch[2]);
+  const invoice=db.prepare(purchase?'SELECT i.*,p.name AS party_name FROM purchase_invoices i LEFT JOIN partners p ON p.id=i.partner_id WHERE i.id=?':'SELECT i.*,p.name AS party_name FROM sale_invoices i LEFT JOIN partners p ON p.id=i.partner_id WHERE i.id=?').get(id);
+  if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
+  const lines=db.prepare(purchase?'SELECT i.*,p.name AS product_name,p.barcode FROM purchase_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id':'SELECT i.*,COALESCE(i.product_name,p.name) AS name,p.barcode FROM sale_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id').all(id);
+  try{return send(res,200,{invoice_no:invoice.invoice_no,kind:purchase?'purchase':'sale',parts:encodeInvoiceQrParts({...invoice,currency:'IQD',lines},purchase?'purchase':'sale')})}catch(e){return send(res,422,{error:e.message})}
+ }
  if(stockERPService.handle(req,res,p,body,url))return;
  if(handleSupplier(req,res,p,url))return;
  if(scanner.handle(req,res,p,body))return;
@@ -358,6 +370,7 @@ const handler=(req,res)=>{
  if(erp.handle(req,res,p,body,url))return;
  if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
  if(req.method==='GET'&&p==='/erp-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'erp-ui.js')));return}
+ if(req.method==='GET'&&p==='/invoice-qr-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'invoice-qr-ui.js')));return}
  if(req.method==='GET'&&p==='/stock-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'stock-ui.js')));return}
  if(req.method==='GET'&&p==='/jsbarcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'node_modules/jsbarcode/dist/JsBarcode.all.min.js')));return}
  if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
@@ -391,10 +404,12 @@ const handler=(req,res)=>{
  const v=readJSON(body),id=String(v.id||'').trim(),name=String(v.name||'').trim(),price=Number(v.price),cost=Number(v.cost||0);
  if(!id||!name||!Number.isSafeInteger(price)||price<0||!Number.isSafeInteger(cost)||cost<0)inputError('الرمز والاسم والسعر والتكلفة مطلوبة بصيغة صحيحة');
  if(!Number.isSafeInteger(Number(v.min_stock||0))||Number(v.min_stock||0)<0)inputError('حد الرصيد غير صحيح');
- if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,String(v.barcode||'')))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
+ const barcode=String(v.barcode??'').trim();if(barcode.length>256||/[\x00-\x1f\x7f]/.test(barcode))inputError('الباركود غير صحيح');
+ if(db.prepare('SELECT id FROM products WHERE barcode=? OR id=?').get(id,barcode))inputError('الرمز أو الباركود مستخدم لمادة أخرى');
+ if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,barcode))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
  if(v.unit_id&&!db.prepare('SELECT id FROM units WHERE id=?').get(String(v.unit_id)))inputError('الوحدة غير موجودة');
  const image=String(v.image_data||'');if(image&&(image.length>400000||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image)))inputError('الصورة تحتاج PNG أو JPEG أو WebP بحجم صغير');
- db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id,image_data) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null,image||null);
+ db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id,image_data) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,name,barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null,image||null);
  return send(res,201,{ok:true,id});
  }
  if(req.method==='POST'&&p==='/api/stock/adjust'){

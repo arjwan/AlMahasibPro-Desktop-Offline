@@ -1,3 +1,4 @@
+import {randomInt} from 'node:crypto';
 // Local warehouse documents, shared-unit barcodes and physical batch ledger.
 export function stockERP({db,inputError,inventory,erp,transaction,postJournal,send,readJSON}){
  const day=()=>new Date().toISOString().slice(0,10);
@@ -79,6 +80,12 @@ export function stockERP({db,inputError,inventory,erp,transaction,postJournal,se
   if(!p.startsWith('/api/stock/'))return false;const get=req.method==='GET',write=req.method==='POST',v=write?readJSON(body):{},ok=(data,status=200)=>{send(res,status,data);return true};
   if(get&&p==='/api/stock/catalog')return ok(db.prepare('SELECT * FROM products ORDER BY name').all().map(p=>({...p,barcodes:db.prepare('SELECT * FROM stock_barcodes WHERE product_id=?').all(p.id),components:db.prepare('SELECT * FROM stock_recipes WHERE product_id=?').all(p.id)})));
   if(write&&p==='/api/stock/product')return ok(transaction(()=>{const p=product(v.product_id);db.prepare('UPDATE products SET category=?,color=?,size=?,price=? WHERE id=?').run(String(v.category||''),String(v.color||''),String(v.size||''),int(v.price??p.price),p.id);erp.audit('stock-product',p.id);return {ok:true}}));
+  if(write&&p==='/api/stock/barcodes/generate'){
+   for(let attempt=0;attempt<20;attempt++){
+    const digits='20'+String(randomInt(10000000000)).padStart(10,'0'),sum=[...digits].reduce((n,d,i)=>n+Number(d)*(i%2?3:1),0),code=digits+((10-sum%10)%10);
+    if(!db.prepare('SELECT id FROM products WHERE id=? OR barcode=?').get(code,code)&&!db.prepare('SELECT code FROM stock_barcodes WHERE code=?').get(code))return ok({code,format:'EAN13',internal:true});
+   }fail('تعذر توليد رمز فريد؛ أعد المحاولة');
+  }
   if(write&&p==='/api/stock/barcodes')return ok(transaction(()=>{const p=product(v.product_id),code=String(v.code||'').trim(),unit=String(v.unit||'حبة').trim(),factor=int(v.factor,1);if(!code||!unit)fail('الباركود والوحدة مطلوبان');const primary=db.prepare('SELECT id FROM products WHERE barcode=? OR id=?').all(code,code);if(primary.some(x=>x.id!==p.id)||(primary.length&&factor!==1))fail('الرمز مستخدم أو يتعارض مع وحدة الحبة');const prior=db.prepare('SELECT * FROM stock_barcodes WHERE code=?').get(code);if(prior)fail('الباركود مستخدم بالفعل');db.prepare('INSERT INTO stock_barcodes VALUES(?,?,?,?)').run(code,p.id,unit,factor);erp.audit('stock-barcode',p.id,{code,factor});return {ok:true}}),201);
   if(write&&p==='/api/stock/recipe')return ok(transaction(()=>{const p=product(v.product_id);if(!Array.isArray(v.components)||!v.components.length)fail('أضف مكونات السيت');if(db.prepare('SELECT 1 FROM product_warehouse WHERE product_id=? AND stock>0').get(p.id)||db.prepare('SELECT 1 FROM stock_recipes WHERE component_id=?').get(p.id))fail('لا يمكن تغيير مكونات سيت ذي رصيد أو مكوّن مستخدم');const seen=new Set();const rows=v.components.map(c=>{const id=product(c.product_id).id;if(id===p.id||seen.has(id)||db.prepare('SELECT 1 FROM stock_recipes WHERE product_id=?').get(id))fail('مكونات مكررة أو متداخلة');seen.add(id);return {id,qty:int(c.qty,1)}});db.prepare('DELETE FROM stock_recipes WHERE product_id=?').run(p.id);for(const c of rows)db.prepare('INSERT INTO stock_recipes VALUES(?,?,?)').run(p.id,c.id,c.qty);erp.audit('stock-recipe',p.id);return {ok:true}}));
   if(get&&p==='/api/stock/batches')return ok(db.prepare('SELECT b.*,p.name,w.name AS warehouse FROM stock_batches b JOIN products p ON p.id=b.product_id JOIN warehouses w ON w.id=b.warehouse_id WHERE b.qty>0 ORDER BY p.name,b.expiry').all());

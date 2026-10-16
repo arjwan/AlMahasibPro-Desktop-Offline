@@ -1,4 +1,4 @@
-import {chromium} from 'playwright';
+import {launchBrowser} from './helpers/browser.mjs';
 import {startServer} from './helpers/server.mjs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -11,7 +11,7 @@ const isolated=mkdtempSync(path.join(tmpdir(),'alma-layout-')),dbPath=path.join(
 const source=new DatabaseSync(path.join(dir,'company.sqlite'),{readOnly:true});await backup(source,dbPath);source.close();const fixture=new DatabaseSync(dbPath);fixture.exec('DELETE FROM registered_devices');fixture.close();
 const server=await startServer(dbPath);let browser;
 try{
- browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:1440,height:1000},hasTouch:true}),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ browser=await launchBrowser();const context=await browser.newContext({viewport:{width:1440,height:1000},hasTouch:true}),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(server.base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});await page.evaluate(()=>window.go('pos'));await page.locator('.product').first().waitFor();
  // Fill a long unsaved invoice using real product buttons (no posted transactions).
  const ids=await page.evaluate(()=>fetch('/api/products').then(r=>r.json()).then(rows=>rows.filter(x=>x.available>0).slice(0,24).map(x=>x.id)));for(const id of ids)await page.locator('.product[data-id="'+id+'"]').click();

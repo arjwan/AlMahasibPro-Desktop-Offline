@@ -1,4 +1,4 @@
-import {chromium} from 'playwright';
+import {launchBrowser} from './helpers/browser.mjs';
 import {startServer} from './helpers/server.mjs';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const dir=mkdtempSync(join(tmpdir(),'alma-license-ui-')),token='eyJwcm9kdWN0IjoiZGVtbyJ9.c2lnbmF0dXJl';
 const server=await startServer(join(dir,'company.sqlite'));let browser;
 try{
- browser=await chromium.launch({headless:true});const context=await browser.newContext(),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ browser=await launchBrowser();const context=await browser.newContext(),page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(token=>{window.copiedLicenseId=null;window.desktopLicensing={copyId:async id=>{window.copiedLicenseId=id;return {ok:true}},pasteToken:async()=>token}},token);
  await page.goto(server.base);await page.locator('#erp-loginuser').fill('admin');await page.locator('#erp-loginpass').fill('admin123');await page.locator('#erp-loginform button').click();await page.locator('#erp-login').waitFor({state:'detached'});
  const machine=await page.locator('#erp-license-machine').inputValue();assert.match(machine,/^[a-f0-9]{64}$/);assert.equal(await page.locator('#erp-license-machine').getAttribute('dir'),'ltr');await page.locator('#erp-license-copy').click();await page.waitForFunction(()=>document.getElementById('erp-license-message').textContent.includes('تم نسخ'));assert.equal(await page.evaluate(()=>window.copiedLicenseId),machine);

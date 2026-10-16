@@ -1,3 +1,4 @@
+import {inspectInvoiceQrPart} from './invoice-qr.mjs';
 import crypto from 'node:crypto';
 import https from 'node:https';
 import fs from 'node:fs';
@@ -27,7 +28,7 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
   const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND active=1 AND expires>?').get(match[1],Date.now());if(!pair){send(res,410,{error:'انتهى الربط'});return true}
   if(req.method==='GET'&&match[2]==='status'){db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now(),pair.token);send(res,200,{ok:true});return true}
   if(req.method==='POST'&&match[2]==='scan'){
-   const v=readJSON(body),barcode=String(v.barcode||'').trim();if(!barcode||barcode.length>256)inputError('باركود غير صحيح');
+   const v=readJSON(body),barcode=String(v.barcode||'').trim();if(barcode.startsWith('ALMAP1:')){try{inspectInvoiceQrPart(barcode)}catch{inputError('رمز QR الفاتورة غير صحيح')}}else if(!barcode||barcode.length>256)inputError('باركود غير صحيح');
    const requestId=v.request_id===undefined?null:String(v.request_id);if(requestId!==null&&!/^[a-zA-Z0-9-]{16,100}$/.test(requestId))inputError('معرف المسح غير صحيح');
    db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now(),pair.token);
    if(requestId){const prior=db.prepare('SELECT id,barcode FROM scanner_events WHERE token=? AND request_id=?').get(pair.token,requestId);if(prior){if(prior.barcode!==barcode)inputError('معرف المسح مستخدم لباركود آخر');send(res,200,{ok:true,id:prior.id});return true}}
