@@ -14,6 +14,8 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      ALMAHASIB_LICENSE_PUBLIC_KEY: ${{ vars.ALMAHASIB_LICENSE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,6 +23,13 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Prepare developer public verification key
+        if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != ''
+        shell: pwsh
+        run: '[IO.File]::WriteAllText((Join-Path $PWD license-public.pem), $env:ALMAHASIB_LICENSE_PUBLIC_KEY)'
+      - name: Installer blocked without developer verification key
+        if: env.ALMAHASIB_LICENSE_PUBLIC_KEY == ''
+        run: Write-Output 'No release installer will be built until ALMAHASIB_LICENSE_PUBLIC_KEY is provisioned.'
       - run: npm test
       - run: node tests/electron.smoke.cjs
       - run: npx electron tests/electron-report.smoke.cjs
@@ -28,10 +37,12 @@ jobs:
       - run: npx playwright install chromium
       - run: node tests/ui.smoke.mjs
       - run: node tests/stock-ui.smoke.mjs
-      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
+      - run: npm run demo:create
+      - run: npm run test:demo
+      - if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true))
         name: Build Windows installer after all checks
         run: npx electron-builder --win nsis --x64 --publish never
-      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
+      - if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true))
         uses: actions/upload-artifact@v4
         with:
           name: AlMahasibPro-Offline-Windows

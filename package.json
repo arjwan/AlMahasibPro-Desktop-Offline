@@ -1,6 +1,6 @@
 {
   "name": "al-mahasibpro-desktop-offline",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,9 @@
     "build:win": "npm test && electron-builder --win nsis --x64 --publish never",
     "test:ui": "node tests/ui.smoke.mjs",
     "repair:accounts": "node tools/repair-accounting.mjs",
-    "test:electron": "node tests/electron.smoke.cjs"
+    "test:electron": "node tests/electron.smoke.cjs",
+    "demo:create": "node tools/create-demo.mjs",
+    "test:demo": "node tests/demo.smoke.mjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -46,7 +48,9 @@
       "currency.mjs",
       "scanner.mjs",
       "scanner-qrcode.js",
-      "advanced-ui.js"
+      "advanced-ui.js",
+      "licensing.mjs",
+      "license-public.pem"
     ],
     "asar": false,
     "win": {
@@ -59,7 +63,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     },
-    "artifactName": "AlMahasibPro-Offline-Setup-${version}-${arch}.${ext}"
+    "artifactName": "AlMahasibPro-Offline-Setup-${version}-${arch}.${ext}",
+    "beforePack": "./tools/before-pack.cjs"
   },
   "dependencies": {
     "jsbarcode": "^3.12.3"

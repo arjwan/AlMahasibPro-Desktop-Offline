@@ -7,6 +7,7 @@ import {extendERP} from './erp.mjs';
 import {scannerERP} from './scanner.mjs';
 import {currencyERP} from './currency.mjs';
 import {advancedERP} from './advanced.mjs';
+import {createLicensing} from './licensing.mjs';
 import {createAccess} from './access.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -326,7 +327,8 @@ function transaction(fn){if(db.isTransaction)return fn();db.exec('BEGIN IMMEDIAT
 const erp=extendERP({db,dbPath,send,inputError,readJSON,transaction,inventory,postJournal,postSale});
 const advanced=advancedERP({db,inputError,postJournal,inventory,erp});erp.setAdvanced(advanced);
 const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON});
-const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});db.exec('PRAGMA user_version=6');
+const licensing=createLicensing({dbPath,send,readJSON});
+const access=createAccess({db,send,readJSON,inputError,audit:erp.audit,licensing});db.exec('PRAGMA user_version=6');
 const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
 const handleSupplier=supplierReports({db,inputError,send});
 stockERPService=stockERP({db,inputError,inventory,erp,transaction,postJournal,send,readJSON});
@@ -336,6 +338,7 @@ const handler=(req,res)=>{
  try{
  const url=new URL(req.url,'http://localhost'),p=url.pathname;
  erp.setActor(null);
+ if(p.startsWith('/api/v1/market/scanner')&&!licensing.allowed(req))return send(res,403,{error:'يتطلب اتصال الشبكة ترخيصاً فعالاً'});
  if(scanner.publicHandle(req,res,p,body))return;
  if(access.handle(req,res,p,body))return;
  erp.setActor(req.user?.id||null);
@@ -389,7 +392,8 @@ const handler=(req,res)=>{
  if(!Number.isSafeInteger(Number(v.min_stock||0))||Number(v.min_stock||0)<0)inputError('حد الرصيد غير صحيح');
  if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,String(v.barcode||'')))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
  if(v.unit_id&&!db.prepare('SELECT id FROM units WHERE id=?').get(String(v.unit_id)))inputError('الوحدة غير موجودة');
- db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null);
+ const image=String(v.image_data||'');if(image&&(image.length>400000||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image)))inputError('الصورة تحتاج PNG أو JPEG أو WebP بحجم صغير');
+ db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id,image_data) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null,image||null);
  return send(res,201,{ok:true,id});
  }
  if(req.method==='POST'&&p==='/api/stock/adjust'){
@@ -401,6 +405,7 @@ const handler=(req,res)=>{
  inventory(product.id,warehouseId,qty,'adjustment',String(v.reference||'تسوية يدوية'),value);
  postJournal('تسوية مخزون', 'ADJ-'+crypto.randomUUID(),qty>0?[['102',value,0],['3',0,value]]:[['501',value,0],['102',0,value]]);
  erp.audit('stock-adjust',product.id,{qty,warehouseId});
+ return {ok:true};
  });
  return send(res,201,{ok:true});
  }
@@ -588,7 +593,7 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
  if(req.method==='POST'&&p==='/api/journal'){
  const v=readJSON(body),lines=v.lines;
- if(/^(S-|P-|R-|V-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
+ if(/^(S-|P-|R-|V-|PAY-|EXP-|STK-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
  erp.periodOpen(v.date||new Date().toISOString().slice(0,10));
  if(!Array.isArray(lines)||lines.length<2)inputError('القيد يحتاج سطرين على الأقل');
  const result=transaction(()=>{
