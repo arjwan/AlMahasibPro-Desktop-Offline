@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import {encodeInvoiceQrParts} from './invoice-qr.mjs';
 import {migrateProviderSecrets} from './secrets.mjs';
 import http from 'node:http';
@@ -479,7 +480,7 @@ const handler=(req,res)=>{
   const invoice=db.prepare(isPurchase?'SELECT p.*,v.name AS party_name FROM purchase_invoices p LEFT JOIN partners v ON v.id=p.partner_id WHERE p.id=?':'SELECT s.*,v.name AS party_name FROM sale_invoices s LEFT JOIN partners v ON v.id=s.partner_id WHERE s.id=?').get(id);
   if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
   const rows=db.prepare(isPurchase?'SELECT i.*,p.name AS product_name,p.barcode FROM purchase_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id':'SELECT i.*,p.name AS product_name,p.barcode FROM sale_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id').all(id);
-  try{return send(res,200,{invoice_no:invoice.invoice_no,kind:isPurchase?'purchase':'sale',parts:encodeInvoiceQrParts({...invoice,lines:rows},isPurchase?'purchase':'sale')});}
+  try{const parts=encodeInvoiceQrParts({...invoice,lines:rows},isPurchase?'purchase':'sale');return send(res,200,{invoice_no:invoice.invoice_no,kind:isPurchase?'purchase':'sale',parts:await Promise.all(parts.map(async (content,i)=>({index:i+1,total:parts.length,content,svg:await QRCode.toString(content,{type:'svg',errorCorrectionLevel:'L',margin:2,width:240})})))});}
   catch(error){return send(res,422,{error:error.message});}
  }
  const invoiceMatch=p.match(new RegExp('^/api/invoices/([0-9]+)
