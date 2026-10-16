@@ -103,8 +103,12 @@ function migrate(){
     }
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
-    db.exec(`DROP INDEX IF EXISTS idx_journal_reference;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_ref_date ON journal_entries(reference, date);`);
+    db.exec(`DROP INDEX IF EXISTS idx_journal_ref_date;
+CREATE TABLE IF NOT EXISTS journal_postings(
+  posting_key TEXT PRIMARY KEY,
+  entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+  created_at TEXT NOT NULL
+);`);
     if(currentVersion<2)db.exec('PRAGMA user_version=2');
 }
 migrate();
@@ -150,10 +154,6 @@ function postJournal(description,reference,lines,accountingDate=null){
   
   const now=new Date().toISOString();
   const dateVal=accountingDate||now.slice(0,10);
-  
-  if(db.prepare('SELECT id FROM journal_entries WHERE reference=? AND date=?').get(reference,dateVal)){
-    throw new Error(`هذا المرجع ${reference} مستخدم مسبقاً في تاريخ ${dateVal}`);
-  }
 
   const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(dateVal,description,reference,now).lastInsertRowid);
   for(const [account,d,c] of valid)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,account,d,c,description);
