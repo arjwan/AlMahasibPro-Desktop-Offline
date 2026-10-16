@@ -1,13 +1,13 @@
 name: Desktop Offline checks
 on:
   push:
-    branches: [development/functional-desktop]
+    branches: [main, development/functional-desktop, development/production-readiness]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
       build:
-        description: 'Build Windows installer only after page review is complete'
+        description: 'Build Windows installer after all checks pass'
         type: boolean
         default: false
 jobs:
@@ -28,9 +28,9 @@ jobs:
       - run: npx playwright install chromium
       - run: node tests/ui.smoke.mjs
       - run: node tests/stock-ui.smoke.mjs
-      - if: github.event_name == 'workflow_dispatch' && inputs.build == true
+      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
         run: npm run build:win
-      - if: github.event_name == 'workflow_dispatch' && inputs.build == true
+      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
         uses: actions/upload-artifact@v4
         with:
           name: AlMahasibPro-Offline-Windows

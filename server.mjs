@@ -359,7 +359,7 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
  if(req.method==='GET'&&p==='/scanner-qrcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'scanner-qrcode.js')));return}
  if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<html dir="rtl"><meta charset="utf-8"><h2>ربط ماسح المحاسب برو</h2><p>افتح تطبيق الماسح الحالي وامسح رمز الربط في شاشة الكاشير.</p></html>');return}
- if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:'0.5.0',instance:process.env.ALMAHASIB_INSTANCE||null,build:runtimeBuild,accounting_schema_ok:true});
+ if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,instance:process.env.ALMAHASIB_INSTANCE||null,build:runtimeBuild,accounting_schema_ok:true});
  if(req.method==='GET'&&p==='/api/diagnostics/accounting'){
  if(req.user.role!=='admin')return send(res,403,{error:'التشخيص للمدير فقط'});
  return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true});
