@@ -12,10 +12,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {fileURLToPath} from 'node:url';
+
 const root=path.dirname(fileURLToPath(import.meta.url));
 const dbPath=process.env.ALMAHASIB_DB || path.join(root,'data','company.sqlite');
+const SECRET_KEY = process.env.ALMAHASIB_SECRET || 'default-secret-key-32-chars-long!!!'; // In prod, this must be outside DB
 fs.mkdirSync(path.dirname(dbPath),{recursive:true});
 const logFile=path.join(path.dirname(dbPath), 'server.log');
+
+function encrypt(text) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(SECRET_KEY).slice(0,32), iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return iv.toString('hex') + ':' + encrypted;
+}
+
+function decrypt(text) {
+    const [ivHex, encryptedHex] = text.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(SECRET_KEY).slice(0,32), iv);
+    let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+}
 function log(msg){
     const timestamp=new Date().toISOString();
     try {
@@ -144,7 +163,39 @@ const initSystem = () => {
 };
 initSystem();
 
-db.exec(`CREATE TABLE IF NOT EXISTS cash_vouchers(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('receipt','payment')), cash_account TEXT NOT NULL REFERENCES accounts(id), counterpart TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL CHECK(amount>0), description TEXT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), date TEXT NOT NULL)`);
+db.exec(`CREATE TABLE IF NOT EXISTS cash_vouchers(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('receipt','payment')), cash_account TEXT NOT NULL REFERENCES accounts(id), counterpart TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL CHECK(amount>0), description TEXT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), date TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_requests(
+  idempotency_key TEXT PRIMARY KEY,
+  invoice_id INTEGER NOT NULL REFERENCES sale_invoices(id),
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  status TEXT CHECK(status IN ('pending','success','failed','cancelled')) NOT NULL,
+  result_payload TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payment_transactions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL REFERENCES sale_invoices(id),
+  provider TEXT NOT NULL,
+  reference TEXT UNIQUE,
+  amount INTEGER NOT NULL CHECK(amount>0),
+  currency TEXT NOT NULL DEFAULT 'IQD',
+  status TEXT CHECK(status IN ('pending','success','failed','cancelled','refunded')) NOT NULL,
+  payment_method TEXT CHECK(payment_method IN ('card','mixed')) NOT NULL,
+  cashier_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payment_providers(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  api_key_encrypted TEXT,
+  webhook_secret_encrypted TEXT,
+  merchant_id TEXT,
+  settings TEXT,
+  active INTEGER DEFAULT 1
+);`);
 function postJournal(description,reference,lines,accountingDate=null){
   erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
   const valid=lines.filter(x=>x[1]||x[2]);
@@ -190,11 +241,11 @@ function postSale(invoiceId){
 function postPurchase(invoiceId){
   const invoice=db.prepare('SELECT * FROM purchase_invoices WHERE id=?').get(invoiceId);
   if(!invoice)inputError('الفاتورة غير موجودة');
-
+  
   const postingKey=`PURCHASE:${invoice.invoice_no}:${invoice.id}`;
   const existing=db.prepare('SELECT entry_id FROM journal_postings WHERE posting_key=?').get(postingKey);
   if(existing)return {id:invoice.id,entry_id:existing.entry_id,status:'already_posted'};
-
+  
   return transaction(()=>{
     const items=db.prepare('SELECT * FROM purchase_items WHERE invoice_id=?').all(invoiceId);
     let totalNet=0;
@@ -202,13 +253,57 @@ function postPurchase(invoiceId){
       inventory(item.product_id,invoice.warehouse_id,item.qty,'purchase',invoice.invoice_no,item.line_total);
       totalNet += item.line_total;
     }
-
+    
     const paid=invoice.paid||0,cash=invoice.payment_method==='bank'?'103':'101';
     const entryId=postJournal('فاتورة شراء '+invoice.invoice_no,invoice.invoice_no,[['102',invoice.net,0],['101',0,paid],['201',0,invoice.net-paid]]);
     
     db.prepare('INSERT INTO journal_postings(posting_key,entry_id,created_at) VALUES(?,?,?)').run(postingKey,entryId,new Date().toISOString());
     erp.audit('purchase-posted',invoiceId,{invoice_no:invoice.invoice_no});
     return {id:invoice.id,entry_id:entryId,status:'posted'};
+  });
+}
+
+function processPayment(invoiceId, paymentData){
+  const invoice=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
+  if(!invoice)inputError('الفاتورة غير موجودة');
+  
+  const {amount,method,provider,reference,idempotency_key,cashier_id} = paymentData;
+  if(!amount||amount<=0)inputError('المبلغ غير صحيح');
+  
+  if(idempotency_key){
+    const existing=db.prepare('SELECT result_payload FROM payment_requests WHERE idempotency_key=?').get(idempotency_key);
+    if(existing)return JSON.parse(existing.result_payload);
+  }
+
+  let isConfirmed = false;
+  if(method==='card'){
+    if(provider==='independent_pos'){
+      const refExists=db.prepare('SELECT id FROM payment_transactions WHERE reference=?').get(reference);
+      if(refExists)inputError('المرجع مستخدم مسبقاً');
+      isConfirmed = true; 
+    } else {
+      isConfirmed = false; 
+    }
+  } else if(method==='cash'){
+    isConfirmed = true;
+  }
+
+  if(!isConfirmed)return {status:'pending',message:'بانتظار تأكيد الدفع'};
+
+  return transaction(()=>{
+    const txId=Number(db.prepare('INSERT INTO payment_transactions(invoice_id,provider,reference,amount,status,payment_method,cashier_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(invoiceId,provider||'manual',reference||'N/A',amount,'success',method,cashier_id,new Date().toISOString(),new Date().toISOString()).lastInsertRowid);
+    
+    const currentPaid=invoice.paid||0;
+    const newPaid=currentPaid+amount;
+    db.prepare('UPDATE sale_invoices SET paid=? WHERE id=?').run(newPaid,invoiceId);
+    
+    const account = method==='card'?'105':'101'; 
+    postJournal('تحصيل دفعة فاتورة '+invoice.invoice_no, `PAY-${txId}`, [[account,amount,0],['104',0,amount]]);
+
+    const result={id:txId,status:'success',amount,paid:newPaid};
+    if(idempotency_key)db.prepare('INSERT INTO payment_requests(idempotency_key,invoice_id,amount,currency,provider,status,result_payload,created_at) VALUES(?,?,?,?,?,?,?,?)').run(idempotency_key,invoiceId,amount,'IQD',provider,'success',JSON.stringify(result),new Date().toISOString());
+    
+    return result;
   });
 }
 const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
