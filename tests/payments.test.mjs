@@ -24,7 +24,10 @@ async function created(f,path,body){const r=await f.request(path,'POST',body);as
 test('POS atomic mixed payment, retry, rejection rollback, debt collection and returns',async()=>{
  const f=await fixture();try{
  await f.login();await created(f,'/api/products',{id:'PAY',name:'Payment test',price:200,cost:100});
- await created(f,'/api/stock/adjust',{product_id:'PAY',delta:20});
+ const seedAdjustment=()=>f.request('/api/stock/adjust','POST',{product_id:'PAY',delta:20},{'Idempotency-Key':'payment-stock-seed'});
+ const adjusted=await seedAdjustment();assert.equal(adjusted.status,201,JSON.stringify(adjusted.data));
+ assert.deepEqual((await seedAdjustment()).data,adjusted.data);
+ assert.equal((await f.request('/api/products')).data[0].stock,20);
  const customer=await created(f,'/api/partners',{name:'Payment customer',type:'customer'});
  const payload={partner_id:customer.id,lines:[{id:'PAY',qty:2}],payments:[{method:'cash',amount:100},{method:'card',provider:'independent_pos',reference:'TERMINAL-1',amount:200}]};
  const make=(body,key)=>f.request('/api/invoices','POST',body,{'Idempotency-Key':key});
@@ -33,6 +36,16 @@ test('POS atomic mixed payment, retry, rejection rollback, debt collection and r
  assert.equal((await make({...payload,discount:1},'checkout-1')).status,400);
  const invoice=(await f.request('/api/invoices/'+first.data.id)).data;assert.equal(invoice.paid,300);assert.equal(invoice.remaining,100);assert.equal(invoice.payment_status,'partial');
  assert.equal((await f.request('/api/products')).data[0].stock,18);
+ // Receipt journals must stay consistent with the invoice and payment records.
+ const receipts=(await f.request('/api/journal')).data.filter(x=>x.reference?.startsWith('PAY-'));
+ assert.equal(receipts.length,2);
+ const cashBefore=(await f.request('/api/ledger?account_id=101')).data;
+ const cardBefore=(await f.request('/api/ledger?account_id=pos-card-clearing')).data;
+ for(const receipt of receipts)assert.equal((await f.request('/api/journal/'+receipt.id+'/reverse','POST',{})).status,400);
+ assert.deepEqual((await f.request('/api/invoices/'+invoice.id)).data,invoice);
+ assert.deepEqual((await f.request('/api/ledger?account_id=101')).data,cashBefore);
+ assert.deepEqual((await f.request('/api/ledger?account_id=pos-card-clearing')).data,cardBefore);
+ assert.equal((await f.request('/api/journal','POST',{reference:'PAY-manual',lines:[{account_id:'101',debit:1},{account_id:'3',credit:1}]})).status,400);
  let db=new DatabaseSync(f.dbPath);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM payment_transactions').get().n,2);assert.equal(db.prepare("SELECT SUM(debit-credit) AS n FROM journal_items WHERE account_id='pos-card-clearing'").get().n,200);db.close();
  for(const payments of [payload.payments,[{method:'cash',amount:401}],[{method:'card',amount:400,provider:'fake',reference:'FAKE'}],[{method:'cash',amount:1.5}]]){const r=await make({...payload,payments},crypto.randomUUID());assert.equal(r.status,400,JSON.stringify(r.data));}
  assert.equal((await f.request('/api/invoices')).data.length,1);assert.equal((await f.request('/api/products')).data[0].stock,18);
