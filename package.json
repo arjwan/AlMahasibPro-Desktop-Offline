@@ -30,6 +30,7 @@
     "files": [
       "electron-main.cjs",
       "server.mjs",
+      "invoice-qr.mjs",
       "secrets.mjs",
       "desktop-runtime.cjs",
       "accounting-schema.mjs",
@@ -62,6 +63,7 @@
     "artifactName": "AlMahasibPro-Offline-Setup-${version}-${arch}.${ext}"
   },
   "dependencies": {
-    "jsbarcode": "^3.12.3"
+    "jsbarcode": "^3.12.3",
+    "qrcode": "^1.5.4"
   }
 }
