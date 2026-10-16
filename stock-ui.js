@@ -2,7 +2,7 @@
 'use strict';
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=n=>Number(n||0).toLocaleString('en-US');
 async function api(path,method='GET',body,headers={}){const r=await fetch(path,{method,headers:{'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)}),data=await r.json();if(!r.ok)throw Error(data.error||'تعذر الحفظ');return data}
-const table=(heads,rows)=>'<table class="workspace-table"><thead><tr>'+heads.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+const table=(heads,rows)=>'<div class="workspace-table-scroll" role="region" aria-label="جدول بيانات المخزن" tabindex="0"><table class="workspace-table"><thead><tr>'+heads.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+(rows.length?rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join(''):'<tr><td class="workspace-empty" colspan="'+heads.length+'">لا توجد سجلات لعرضها</td></tr>')+'</tbody></table></div>';
 const kinds={in:'إدخال',out:'إخراج','return-in':'مرتجع إلى المخزن','return-out':'مرتجع من المخزن',assemble:'تجميع سيت',disassemble:'فك سيت'};
 const field=(id,label,type='text',value='')=>'<label>'+esc(label)+'<input class="input" id="stk-'+id+'" type="'+type+'" value="'+esc(value)+'"></label>';
 const select=(id,label,options)=>'<label>'+esc(label)+'<select class="input" id="stk-'+id+'">'+options+'</select></label>';
