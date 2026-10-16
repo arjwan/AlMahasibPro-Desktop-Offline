@@ -103,7 +103,7 @@ function migrate(){
     }
     const journalColumns=columns('journal_items');
     if(journalColumns.has('account_id'))db.exec('CREATE INDEX IF NOT EXISTS idx_journal_account ON journal_items(account_id)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)');
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_reference ON journal_entries(reference);`);
     if(currentVersion<2)db.exec('PRAGMA user_version=2');
 }
 migrate();
@@ -141,23 +141,37 @@ initSystem();
 
 db.exec(`CREATE TABLE IF NOT EXISTS cash_vouchers(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('receipt','payment')), cash_account TEXT NOT NULL REFERENCES accounts(id), counterpart TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL CHECK(amount>0), description TEXT, entry_id INTEGER NOT NULL REFERENCES journal_entries(id), date TEXT NOT NULL)`);
 function postJournal(description,reference,lines,accountingDate=null){
- erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
- const valid=lines.filter(x=>x[1]||x[2]);
- const debit=valid.reduce((n,x)=>n+x[1],0),credit=valid.reduce((n,x)=>n+x[2],0);
- if(!Number.isSafeInteger(debit)||debit!==credit)inputError('القيد غير متوازن');
- if(!valid.length)return null;
- const now=new Date().toISOString();
- const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(accountingDate||now.slice(0,10),description,reference,now).lastInsertRowid);
- for(const [account,d,c] of valid)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,account,d,c,description);
- return id;
+  erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
+  const valid=lines.filter(x=>x[1]||x[2]);
+  const debit=valid.reduce((n,x)=>n+x[1],0),credit=valid.reduce((n,x)=>n+x[2],0);
+  if(!Number.isSafeInteger(debit)||debit!==credit)inputError('القيد غير متوازن: دبيته '+debit+' كريدت '+credit);
+  if(!valid.length)return null;
+  
+  if(db.prepare('SELECT id FROM journal_entries WHERE reference=?').get(reference)){
+    throw new Error('هذا المرجع مستخدم مسبقاً: '+reference);
+  }
+
+  const now=new Date().toISOString();
+  const id=Number(db.prepare('INSERT INTO journal_entries(date,description,reference,created_at) VALUES(?,?,?,?)').run(accountingDate||now.slice(0,10),description,reference,now).lastInsertRowid);
+  for(const [account,d,c] of valid)db.prepare('INSERT INTO journal_items(entry_id,account_id,debit,credit,memo) VALUES(?,?,?,?,?)').run(id,account,d,c,description);
+  return id;
 }
 function postSale(invoiceId){
- const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
- if(sale.source==='pos')db.prepare('UPDATE sale_items SET loaded_qty=qty WHERE invoice_id=?').run(invoiceId);
- const cost=db.prepare('SELECT COALESCE(SUM(COALESCE(cost_total,qty*cost_snapshot)),0) AS total FROM sale_items WHERE invoice_id=?').get(invoiceId).total;
- const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
- postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',cost,0],['102',0,cost]]);
- erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
+  const sale=db.prepare('SELECT * FROM sale_invoices WHERE id=?').get(invoiceId);
+  if(!sale)inputError('الفاتورة غير موجودة');
+  if(sale.source==='pos')db.prepare('UPDATE sale_items SET loaded_qty=qty WHERE invoice_id=?').run(invoiceId);
+  
+  const items=db.prepare('SELECT * FROM sale_items WHERE invoice_id=?').all(invoiceId);
+  let totalCost=0;
+  for(const item of items){
+    const cost=item.cost_snapshot ?? erp.inventoryCost(item.product_id,item.qty);
+    db.prepare('UPDATE sale_items SET cost_snapshot=?,cost_total=? WHERE id=?').run(cost,item.qty * cost,item.id);
+    totalCost += (item.qty * cost);
+  }
+
+  const paid=sale.paid??(sale.payment_method==='credit'?0:sale.net),cash=sale.payment_method==='bank'?'103':'101';
+  postJournal('فاتورة بيع '+sale.invoice_no,sale.invoice_no,[[cash,paid,0],['104',sale.net-paid,0],['401',0,sale.net],['501',totalCost,0],['102',0,totalCost]]);
+  erp.audit('sale-posted',invoiceId,{invoice_no:sale.invoice_no});
 }
 const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
