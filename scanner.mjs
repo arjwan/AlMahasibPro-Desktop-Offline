@@ -19,12 +19,13 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
   if(!(net.isIP(hostname)?cert.checkIP(hostname):cert.checkHost(hostname)))inputError('الشهادة لا تغطي عنوان الخادم');
   return {hostname,port,cert:String(v.cert),key:String(v.key)};
  }catch(error){if(error.status)throw error;inputError('ملفات شهادة HTTPS أو المفتاح الخاص غير صحيحة')} }
- function metadata(){return {enabled:!!tlsServer?.listening,origin:config?'https://'+config.hostname+':'+config.port:null,error:tlsError,certificate_required:!config}}
+ function localOrigin(req){const host=String(req.headers.host||'').split(':')[0];const advertised=process.env.ALMAHASIB_SCANNER_HOST||host;return 'http://'+advertised+':'+Number(process.env.PORT||3765)}
+ function pairingUrl(req,token){return (metadata().origin||localOrigin(req))+'/market-scanner.html#'+token}
+ function metadata(){return {enabled:!!tlsServer?.listening,origin:tlsServer?.listening&&config?'https://'+config.hostname+':'+config.port:null,error:tlsError,certificate_required:!config}}
  function startTLS(handler){listener=handler;if(!fs.existsSync(configPath))return;try{const settings=JSON.parse(fs.readFileSync(configPath,'utf8'));config=validate({...settings,cert:fs.readFileSync(path.join(dir,'server.crt'),'utf8'),key:fs.readFileSync(path.join(dir,'server.key'),'utf8')});tlsServer=https.createServer({key:config.key,cert:config.cert,minVersion:'TLSv1.2'},handler);tlsServer.on('error',e=>{tlsError=e.message});tlsServer.listen(config.port,process.env.ALMAHASIB_TLS_HOST||'0.0.0.0')}catch(e){tlsError=e.message}}
  function publicHandle(req,res,p,body){
   const match=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(status|scan)$/);if(!match)return false;
-  if(req.headers.origin&&req.headers.origin!=='https://'+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
-  if(!req.socket.encrypted){send(res,403,{error:'الماسح يحتاج HTTPS موثوقاً'});return true}
+  if(req.headers.origin&&req.headers.origin!==(req.socket.encrypted?'https://':'http://')+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
   const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND active=1 AND expires>?').get(match[1],Date.now());if(!pair){send(res,410,{error:'انتهى الربط'});return true}
   if(req.method==='GET'&&match[2]==='status'){db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now(),pair.token);send(res,200,{ok:true});return true}
   if(req.method==='POST'&&match[2]==='scan'){
@@ -45,14 +46,14 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
    fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'server.crt'),checked.cert,{mode:0o600});fs.writeFileSync(path.join(dir,'server.key'),checked.key,{mode:0o600});fs.writeFileSync(configPath,JSON.stringify({hostname:checked.hostname,port:checked.port}),{mode:0o600});audit('scanner-tls-config','local',{hostname:checked.hostname,port:checked.port});send(res,200,{ok:true,restart_required:true});return true;
   }
   if(get&&p==='/api/v1/market/scanner/pairs'){
-   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>({...pair,qr_url:metadata().origin?metadata().origin+'/market-scanner.html#'+pair.token:null})));return true;
+   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>({...pair,qr_url:pairingUrl(req,pair.token)})));return true;
   }
   if(post&&p==='/api/v1/market/scanner/pair'){
    // Pairing code can be prepared immediately; HTTPS is still required to use the phone camera and transmit scans.
    if(db.prepare('SELECT COUNT(*) AS n FROM scanner_pairs WHERE owner=? AND active=1').get(owner(req)).n>=20)inputError('افصل جهازاً من إعدادات قارئ الهاتف قبل إضافة جهاز آخر');
    const token=crypto.randomBytes(16).toString('hex'),expires=8640000000000000;
    db.prepare('INSERT INTO scanner_pairs(token,owner,expires) VALUES(?,?,?)').run(token,owner(req),expires);
-   send(res,201,{token,expires,qr_url:metadata().origin?metadata().origin+'/market-scanner.html#'+token:null});return true;
+   send(res,201,{token,expires,qr_url:pairingUrl(req,token)});return true;
   }
   const poll=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(poll|revoke)$/);
   if(poll){db.prepare('UPDATE scanner_pairs SET owner=?,expires=? WHERE token=? AND owner=? AND active=1').run(owner(req),8640000000000000,poll[1],crypto.createHash('sha256').update(req.sessionId||'').digest('hex'));const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND owner=? AND active=1 AND expires>?').get(poll[1],owner(req),Date.now());if(!pair){send(res,410,{error:'الربط غير صالح لهذه الجلسة'});return true}
