@@ -60,3 +60,13 @@ test('New cash boxes retain independent balances and permit receipt and payment 
  const report=await api('/api/reports/financial');assert.equal(report.debit,report.credit);
  }finally{await server.stop();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('Save-and-print uses the saved voucher and keeps both actions disabled until complete',async()=>{
+ const fields=Object.fromEntries(['voucher','voucherprintnow','vouchername','vouchercompany','kind','cash','counterpart','voucheramount','voucherdesc'].map(k=>['ws-'+k,{value:({vouchername:'علي',kind:'receipt',cash:'101',counterpart:'3',voucheramount:'500'})[k]||'',disabled:false}]));
+ const printed=[],posts=[],alerts=[];let closed=false,organized=false;
+ const popup={document:{body:{textContent:''},open(){},write(s){printed.push(s)},close(){}},close(){closed=true}};
+ const context=vm.createContext({document:{getElementById:id=>fields[id]},window:{open:()=>popup},page:'banks',Number,Error,alert:s=>alerts.push(s),voucherPrintHTML:v=>'PRINT-'+v.id,organizeWorkspaceSections:()=>{organized=true},show:async()=>{},apiRequest:async(path,method,body)=>{if(method==='POST'){assert.equal(fields['ws-voucher'].disabled,true);assert.equal(fields['ws-voucherprintnow'].disabled,true);posts.push(body);return {id:42}}return [{id:42}]}});
+ const begin=html.indexOf('async function saveCashVoucher('),end=html.indexOf("document.getElementById('ws-voucher').onclick=()=>",begin);
+ vm.runInContext(html.slice(begin,end),context);await context.saveCashVoucher(true);
+ assert.deepEqual(printed,['PRINT-42']);assert.equal(posts.length,1);assert.equal(organized,true);assert.equal(alerts.length,0);assert.equal(closed,false);assert.equal(fields['ws-voucher'].disabled,false);
+});
