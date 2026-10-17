@@ -269,11 +269,11 @@ function organizeWorkspaceSections(page){
   const details=document.createElement('details');
   details.className=panel.className+' ws-modern-section';
   details.dataset.wsOrganized='true';
-  details.open=first && (primaryKeywords.test(title)||!registerKeywords.test(title));first=false;
+  details.open=first && (primaryKeywords.test(title)||!registerKeywords.test(title));if(details.open)first=false;
   const summary=document.createElement('summary');
   summary.className='ws-section-summary';
   const titleSpan=document.createElement('span');titleSpan.className='ws-section-title';titleSpan.textContent=title;
-  const count=panel.querySelectorAll('table tbody tr').length||panel.querySelectorAll('table tr').length-Number(!!panel.querySelector('table thead'));
+  const count=Math.max(0,panel.querySelectorAll('table tbody tr').length||panel.querySelectorAll('table tr').length-Number(!!panel.querySelector('table thead')));
   const info=document.createElement('span');info.className='ws-section-meta';
   if(count&&/سجل|فواتير|حركات|القيود|أرصدة|مواد|المرتجعات|السندات|الحسابات|العملاء|الموردون/.test(title))info.textContent=count.toLocaleString('ar-IQ')+' سجل';
   else info.textContent='اضغط للعرض أو الإخفاء';
