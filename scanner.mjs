@@ -4,6 +4,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import os from 'node:os';
 export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
  db.exec(`CREATE TABLE IF NOT EXISTS scanner_pairs(token TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1);
  CREATE TABLE IF NOT EXISTS scanner_events(id INTEGER PRIMARY KEY, token TEXT NOT NULL REFERENCES scanner_pairs(token), barcode TEXT NOT NULL, created_at TEXT NOT NULL);`);
@@ -19,7 +20,7 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
   if(!(net.isIP(hostname)?cert.checkIP(hostname):cert.checkHost(hostname)))inputError('الشهادة لا تغطي عنوان الخادم');
   return {hostname,port,cert:String(v.cert),key:String(v.key)};
  }catch(error){if(error.status)throw error;inputError('ملفات شهادة HTTPS أو المفتاح الخاص غير صحيحة')} }
- function localOrigin(req){const host=String(req.headers.host||'').split(':')[0];const advertised=process.env.ALMAHASIB_SCANNER_HOST||host;return 'http://'+advertised+':'+Number(process.env.PORT||3765)}
+ function localOrigin(req){const host=String(req.headers.host||'').split(':')[0];const addresses=Object.values(os.networkInterfaces()).flat().filter(x=>x&&x.family==='IPv4'&&!x.internal);const lan=addresses.find(x=>/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(x.address))||addresses[0];const advertised=process.env.ALMAHASIB_SCANNER_HOST||lan?.address||host;return 'http://'+advertised+':'+Number(process.env.PORT||3765)}
  function pairingUrl(req,token){return (metadata().origin||localOrigin(req))+'/market-scanner.html#'+token}
  function metadata(){return {enabled:!!tlsServer?.listening,origin:tlsServer?.listening&&config?'https://'+config.hostname+':'+config.port:null,error:tlsError,certificate_required:!config}}
  function startTLS(handler){listener=handler;if(!fs.existsSync(configPath))return;try{const settings=JSON.parse(fs.readFileSync(configPath,'utf8'));config=validate({...settings,cert:fs.readFileSync(path.join(dir,'server.crt'),'utf8'),key:fs.readFileSync(path.join(dir,'server.key'),'utf8')});tlsServer=https.createServer({key:config.key,cert:config.cert,minVersion:'TLSv1.2'},handler);tlsServer.on('error',e=>{tlsError=e.message});tlsServer.listen(config.port,process.env.ALMAHASIB_TLS_HOST||'0.0.0.0')}catch(e){tlsError=e.message}}
