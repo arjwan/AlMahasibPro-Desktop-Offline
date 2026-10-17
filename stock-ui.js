@@ -20,9 +20,23 @@ panel('إضافة صنف','<form id="stk-create-form"><div class="workspace-form
 panel('تصنيف الصنف واللون والقياس والسعر','<form id="stk-meta-form"><div class="workspace-form">'+select('meta-product','الصنف',pOptions)+field('category','التصنيف')+field('color','اللون')+field('size','القياس')+field('meta-price','السعر الحالي للحبة','number',products[0]?.price||0)+'</div><button class="btn">حفظ</button></form>')+
 panel('باركودات ووحدات الصنف نفسه','<p>الحبة والكرتون يستخدمان رصيداً واحداً. مثال: عامل الكرتون 12 يعني 12 حبة.</p><form id="stk-alias-form"><div class="workspace-form">'+select('alias-product','الصنف',pOptions)+field('alias-code','باركود بديل')+field('alias-unit','اسم الوحدة','text','كرتون')+field('alias-factor','عدد الحبات في الوحدة','number',12)+'</div><button class="btn">إضافة الباركود</button></form>'+table(['الباركود','الصنف','الوحدة','عدد الحبات'],products.flatMap(p=>p.barcodes.map(b=>[esc(b.code),esc(p.name),esc(b.unit),b.factor]))))+
 panel('مكونات السيت','<p>التجميع يصرف المكونات ويضيف السيت؛ الفك يعيد المكونات ويصرف السيت. لا يتضاعف المخزون أو قيمته.</p><div class="workspace-form">'+select('set','السيت',pOptions)+select('component','المكوّن',pOptions)+field('component-qty','العدد داخل السيت','number',1)+'</div>'+button('component-add','إضافة مكوّن')+'<div id="stk-recipe"></div>'+button('recipe-save','حفظ المكونات'))+
-panel('الوجبات والصلاحية',table(['المادة','المخزن','الوجبة','الصلاحية','الرصيد','الحالة'],batches.map(b=>[esc(b.name),esc(b.warehouse),esc(b.lot||'غير محددة'),esc(b.expiry||'غير محددة'),fmt(b.qty),b.expiry&&b.expiry<new Date().toISOString().slice(0,10)?'منتهي — ممنوع الصرف':'صالح'])))+
+panel('الوجبات والصلاحية','<p>إجمالي السجلات: '+fmt(batches.length)+' — تُعرض 20 نتيجة في الصفحة فقط</p>'+field('batch-search','ابحث عن المادة أو المخزن أو الوجبة')+'<div id="stk-batch-results"></div><div class="stk-pager"><button type="button" class="btn light" id="stk-batch-prev">السابق</button><span id="stk-batch-page"></span><button type="button" class="btn light" id="stk-batch-next">التالي</button></div>')+
 panel('ملصقات الباركود','<div class="workspace-form">'+select('template','قالب محفوظ','<option value="">قالب جديد</option>'+opts(templates))+field('template-name','اسم القالب','text','ملصق 50 × 30')+field('label-code','باركود أو رمز الصنف')+field('width','العرض مم','number',50)+field('height','الارتفاع مم','number',30)+field('font','حجم الخط','number',12)+field('copies','عدد النسخ','number',1)+'<label><input id="stk-show-name" type="checkbox" checked> اسم الصنف</label><label><input id="stk-show-price" type="checkbox" checked> السعر الحالي</label></div>'+button('template-save','حفظ القالب')+' '+button('label-print','معاينة وطباعة الملصقات'))+
 panel('المخازن والوحدات','<form id="stk-warehouse-form"><div class="workspace-form">'+field('warehouse-name','اسم المخزن')+field('warehouse-location','الموقع')+'</div><button class="btn">إضافة مخزن</button></form><form id="stk-unit-form"><div class="workspace-form">'+field('unit-id','رمز الوحدة')+field('unit-name','اسم الوحدة')+'</div><button class="btn">إضافة وحدة</button></form>');
+let batchPage=0;const batchPageSize=20;
+function drawBatchPage(){
+ const q=value('batch-search').trim().toLocaleLowerCase();
+ const found=batches.filter(b=>[b.name,b.warehouse,b.lot,b.expiry].some(v=>String(v||'').toLocaleLowerCase().includes(q)));
+ const totalPages=Math.max(1,Math.ceil(found.length/batchPageSize));batchPage=Math.max(0,Math.min(batchPage,totalPages-1));
+ const rows=found.slice(batchPage*batchPageSize,(batchPage+1)*batchPageSize);
+ $('batch-results').innerHTML=rows.length?table(['المادة','المخزن','الوجبة','الصلاحية','الرصيد','الحالة'],rows.map(b=>[esc(b.name),esc(b.warehouse),esc(b.lot||'غير محددة'),esc(b.expiry||'غير محددة'),fmt(b.qty),b.expiry&&b.expiry<new Date().toISOString().slice(0,10)?'منتهي — ممنوع الصرف':'صالح'])):'<p>لا توجد نتائج مطابقة</p>';
+ $('batch-page').textContent='صفحة '+(batchPage+1)+' من '+totalPages+' — '+found.length+' سجل';
+ $('batch-prev').disabled=batchPage===0;$('batch-next').disabled=batchPage>=totalPages-1;
+}
+$('batch-search').oninput=()=>{batchPage=0;drawBatchPage()};
+$('batch-prev').onclick=()=>{batchPage--;drawBatchPage()};
+$('batch-next').onclick=()=>{batchPage++;drawBatchPage()};
+drawBatchPage();
 const notify=s=>$('message').textContent=s;
 const reload=()=>window.go('stock');
 function action(id,fn){$(id).onclick=async()=>{const b=$(id);b.disabled=true;try{await fn()}catch(err){notify(err.message)}finally{b.disabled=false}}}
