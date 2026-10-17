@@ -58,6 +58,19 @@ app.whenReady().then(async()=>{
       const printers=await window.webContents.getPrintersAsync();
       return printers.map(p=>({name:p.name,displayName:p.displayName||p.name,isDefault:!!p.isDefault,status:Number.isFinite(p.status)?p.status:null}));
     });
+    ipcMain.handle('devices-test-print',async(event,printerName,paper)=>{
+      licenseFrame(event);
+      if(typeof printerName!=='string'||printerName.length>250||!['A4','58','80'].includes(paper))throw Error('إعدادات الطباعة غير صحيحة');
+      const installed=await window.webContents.getPrintersAsync();
+      if(!installed.some(p=>p.name===printerName))throw Error('الطابعة غير مثبتة على هذا الجهاز');
+      const test=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
+      try{
+        const width=paper==='A4'?'210mm':paper+'mm';
+        const html='<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;padding:12px;text-align:center}@page{size:'+width+' auto;margin:4mm}</style><h2>المحاسب برو</h2><p>اختبار الطابعة — '+paper+'</p><p>'+new Date().toLocaleString('ar-IQ')+'</p><hr><p>إذا ظهرت هذه الورقة فالطابعة تعمل</p></html>';
+        await test.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(html));
+        return await new Promise(resolve=>test.webContents.print({silent:false,deviceName:printerName,printBackground:true},(success,reason)=>resolve({ok:success,error:success?'':String(reason||'أُلغيت الطباعة')})));
+      }finally{if(!test.isDestroyed())test.destroy()}
+    });
     ipcMain.handle('license-copy-id',(event,id)=>{licenseFrame(event);if(typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))throw Error('معرّف الجهاز غير صحيح');clipboard.writeText(id);return {ok:true}});
     ipcMain.handle('license-paste-token',event=>{licenseFrame(event);const token=clipboard.readText().trim();if(token.length>8192||!/^[-_A-Za-z0-9]+\.[-_A-Za-z0-9]+$/.test(token))throw Error('الحافظة لا تحتوي على رمز ترخيص صالح');return token});
     window.webContents.on('context-menu',(_event,params)=>{const items=[];if(params.isEditable)items.push({label:'قص',role:'cut',enabled:params.editFlags.canCut});if(params.selectionText||params.isEditable)items.push({label:'نسخ',role:'copy',enabled:params.editFlags.canCopy});if(params.isEditable)items.push({label:'لصق',role:'paste',enabled:params.editFlags.canPaste});if(items.length){items.push({label:'تحديد الكل',role:'selectAll'});Menu.buildFromTemplate(items).popup({window})}});
