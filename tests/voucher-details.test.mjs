@@ -41,3 +41,22 @@ test('Cash and FX vouchers snapshot authenticated cashier, party, company, times
  const legacy=(await api('/api/cash/vouchers'))[0];assert.equal(legacy.amount,1000);assert.equal(legacy.cashier_name,null);assert.equal(legacy.created_at,null);
  }finally{await server.stop();rmSync(dir,{recursive:true,force:true})}
 });
+
+test('New cash boxes retain independent balances and permit receipt and payment vouchers',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'cash-boxes-')),server=await startServer(join(dir,'company.sqlite'));let cookie='';
+ async function api(path,method='GET',body,expected=200){const r=await fetch(server.base+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(r.headers.getSetCookie().length)cookie=r.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');const data=await r.json();assert.equal(r.status,expected,JSON.stringify(data));return data;}
+ try{
+ await api('/api/auth/login','POST',{username:'admin',password:'admin123'});
+ const before=(await api('/api/accounts')).find(x=>x.id==='101');
+ const box=await api('/api/cash/boxes','POST',{name:'صندوق المبيعات الثاني'},201);
+ assert.equal((await api('/api/cash/boxes','POST',{name:'صندوق المبيعات الثاني'},201)).id,box.id);
+ await api('/api/cash/boxes','POST',{name:''},400);
+ await api('/api/cash/vouchers','POST',{kind:'receipt',cash_account:box.id,counterpart:'3',amount:1000,party_name:'علي'},201);
+ await api('/api/cash/vouchers','POST',{kind:'payment',cash_account:box.id,counterpart:'3',amount:250,party_name:'علي'},201);
+ const accounts=await api('/api/accounts'),current=accounts.find(x=>x.id===box.id);
+ assert.equal(current.parent_id,'101');assert.equal(current.debit-current.credit,750);
+ const main=accounts.find(x=>x.id==='101');assert.equal(main.debit-main.credit,before.debit-before.credit);
+ const rows=await api('/api/cash/vouchers');assert.equal(rows.filter(x=>x.cash_account===box.id).length,2);assert.equal(rows[0].cash_name,'صندوق المبيعات الثاني');
+ const report=await api('/api/reports/financial');assert.equal(report.debit,report.credit);
+ }finally{await server.stop();rmSync(dir,{recursive:true,force:true});}
+});

@@ -614,10 +614,18 @@ const handler=(req,res)=>{
  });
  return send(res,200,result);
  }
+ if(req.method==='POST'&&p==='/api/cash/boxes'){
+ const name=String(readJSON(body).name||'').trim();if(!name||name.length>150)inputError('أدخل اسم صندوق لا يتجاوز 150 حرفاً');
+ const result=transaction(()=>{
+ const existing=db.prepare("SELECT id,code,name FROM accounts WHERE (id='101' OR parent_id='101') AND name=?").get(name);if(existing)return existing;
+ const id='CASH-'+crypto.randomUUID(),code='101-'+crypto.randomUUID().slice(0,8);
+ db.prepare("INSERT INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,'asset','101')").run(id,code,name);erp.audit('cashbox-created',id,{name});return {id,code,name};
+ });return send(res,201,result);
+ }
  if(req.method==='GET'&&p==='/api/cash/vouchers')return send(res,200,db.prepare('SELECT v.*,a.name AS cash_name,b.name AS counterpart_name FROM cash_vouchers v JOIN accounts a ON a.id=v.cash_account JOIN accounts b ON b.id=v.counterpart ORDER BY v.id DESC').all());
  if(req.method==='POST'&&p==='/api/cash/vouchers'){
  const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart);
- if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
+ if(!['receipt','payment'].includes(v.kind)||!db.prepare("SELECT id FROM accounts WHERE id=? AND type='asset' AND (id IN ('101','103') OR parent_id='101')").get(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
  const result=transaction(()=>{
  if(['107','108'].includes(counterpart))inputError('استخدم سند الدولار لهذا الحساب');
  if(!db.prepare('SELECT id FROM accounts WHERE id=?').get(counterpart))inputError('الحساب المقابل غير موجود');
