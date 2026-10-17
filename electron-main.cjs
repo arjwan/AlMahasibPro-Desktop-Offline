@@ -83,6 +83,8 @@ app.whenReady().then(async()=>{
       const report=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
       try{await report.loadURL(target);const bytes=await report.webContents.printToPDF({printBackground:true,landscape:true,pageSize:'A4',preferCSSPageSize:true});fs.writeFileSync(destination.filePath,bytes);return {ok:true}}finally{report.destroy()}
     });
+    window.setTitle('المحاسب برو | Desktop Offline '+app.getVersion());
+    window.webContents.on('page-title-updated',event=>event.preventDefault());
     window.loadURL(`http://127.0.0.1:${port}/`);
     window.on('closed',()=>{window=null})
 });

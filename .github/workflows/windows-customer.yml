@@ -1,0 +1,51 @@
+name: Windows clean customer installer 0.5.7
+on:
+  push:
+    branches: [development/scanner-local-reliability]
+    paths: ['package.json', '.github/workflows/windows-customer.yml', 'tests/windows-installer.smoke.cjs']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      ALMAHASIB_LICENSE_PUBLIC_KEY: ${{ vars.ALMAHASIB_LICENSE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Prepare developer public verification key
+        if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != ''
+        shell: pwsh
+        run: '[IO.File]::WriteAllText((Join-Path $PWD license-public.pem), $env:ALMAHASIB_LICENSE_PUBLIC_KEY)'
+      - name: Full accounting and application tests
+        run: npm test
+      - name: Electron startup
+        run: node tests/electron.smoke.cjs
+      - name: Electron PDF
+        run: npx electron tests/electron-report.smoke.cjs
+      - name: Electron licensing
+        run: npx electron tests/electron-license.smoke.cjs
+      - name: Build clean x64 NSIS installer
+        run: npx electron-builder --win nsis --x64 --publish never
+      - name: Verify clean installed database and upgrade preservation
+        run: node tests/windows-installer.smoke.cjs
+      - name: Installer checksum
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist/*Setup-0.5.7-x64.exe
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText(($installer.FullName + '.sha256'), ($hash + '  ' + $installer.Name))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AlMahasibPro-Offline-0.5.7-Clean-Windows-x64
+          path: |
+            dist/*Setup-0.5.7-x64.exe
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
