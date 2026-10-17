@@ -26,11 +26,11 @@ app.whenReady().then(async()=>{
         return;
     }
 
-    writeLog(`Spawning server at ${serverPath} on port ${port} with DB ${path.join(data,'company-clean-v1.sqlite')}`);
+    writeLog(`Spawning server at ${serverPath} on port ${port} with DB ${path.join(data,'company-master-v1.sqlite')}`);
     
     const instance=crypto.randomBytes(24).toString('hex');
     server=spawn(process.execPath,[serverPath],{
-        env:{...process.env,ELECTRON_RUN_AS_NODE:'1',ALMAHASIB_REQUIRE_LICENSE:app.isPackaged?'1':(process.env.ALMAHASIB_REQUIRE_LICENSE||''),ALMAHASIB_INSTANCE:instance,ALMAHASIB_DB:path.join(data,'company-clean-v1.sqlite'),PORT:String(port),ALMAHASIB_HOST:process.env.ALMAHASIB_HOST||'0.0.0.0'},
+        env:{...process.env,ELECTRON_RUN_AS_NODE:'1',ALMAHASIB_REQUIRE_LICENSE:app.isPackaged?'1':(process.env.ALMAHASIB_REQUIRE_LICENSE||''),ALMAHASIB_INSTANCE:instance,ALMAHASIB_DB:path.join(data,'company-master-v1.sqlite'),PORT:String(port),ALMAHASIB_HOST:process.env.ALMAHASIB_HOST||'0.0.0.0'},
         windowsHide:true
     });
 

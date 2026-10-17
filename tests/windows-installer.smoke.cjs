@@ -7,7 +7,7 @@ const root=path.resolve(__dirname,'..'),version=require('../package.json').versi
 const installer=path.join(root,'dist',`AlMahasibPro-Offline-Setup-${version}-x64.exe`);
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'alma-installer-')),install=path.join(dir,'application'),profile=path.join(dir,'profile');
 fs.mkdirSync(profile,{recursive:true});
-const executable=path.join(install,'AlMahasibPro Offline.exe'),dbPath=path.join(profile,'company-clean-v1.sqlite');
+const executable=path.join(install,'AlMahasibPro Offline.exe'),dbPath=path.join(profile,'company-master-v1.sqlite');
 async function installApp(){await new Promise((resolve,reject)=>{const child=spawn(installer,['/S','/D='+install],{windowsHide:true});const timer=setTimeout(()=>{try{execFileSync('taskkill',['/PID',String(child.pid),'/T','/F'])}catch{}reject(Error('Installer timed out'))},120000);child.once('error',e=>{clearTimeout(timer);reject(e)});child.once('exit',code=>{clearTimeout(timer);code===0?resolve():reject(Error('Installer exit '+code))})});assert.ok(fs.existsSync(executable),'Installed executable missing')}
 async function launch(){
  const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
@@ -26,7 +26,8 @@ async function launch(){
  const payload=path.join(install,'resources','app');
  function checkPayload(folder){for(const item of fs.readdirSync(folder,{withFileTypes:true})){const file=path.join(folder,item.name);if(item.isDirectory())checkPayload(file);else assert.ok(!/\.(?:sqlite(?:-wal|-shm)?|db|token)$/i.test(item.name),'Customer data in installer: '+file)}}
  checkPayload(payload);
- await launch();assert.ok(fs.existsSync(dbPath),'Expected current application database');
+ const legacy=path.join(profile,'company-clean-v1.sqlite');fs.writeFileSync(legacy,'old-profile-marker');
+ await launch();assert.equal(fs.readFileSync(legacy,'utf8'),'old-profile-marker');assert.ok(fs.existsSync(dbPath),'Expected current application database');
  let db=new DatabaseSync(dbPath);
  for(const table of ['products','partners','purchase_invoices','sale_invoices','journal_entries','cash_vouchers']){
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM '+table).get().n,0,'Fresh customer database must be empty: '+table);
