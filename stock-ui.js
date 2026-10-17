@@ -13,6 +13,13 @@ function stockBalanceTable(matching,balances){
  }).join('');
  return '<div class="ws-table-scroll stk-balances-scroll" role="region" aria-label="جدول أرصدة المخازن" tabindex="0"><table class="workspace-table stk-balances-table"><thead><tr>'+heads.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+(rows||'<tr><td colspan="'+heads.length+'" class="stk-empty">لا توجد مواد مطابقة للبحث</td></tr>')+'</tbody></table></div>';
 }
+function stockLabelStyle(t){
+ const big=t.layout==='price'?1.5:1;
+ return '.stock-label{box-sizing:border-box;width:'+t.width+'mm;height:'+t.height+'mm;padding:'+(t.layout==='compact'?'.5mm':'1mm')+';background:white;color:black;text-align:center;direction:rtl;font:'+t.font+'px Arial,sans-serif;line-height:1.15;display:flex;flex-direction:column;gap:.5mm;overflow:hidden;border:0}.stock-label-name{font-weight:bold;overflow-wrap:anywhere}.stock-label-description{font-size:.85em;overflow-wrap:anywhere}.stock-label-id{font-size:.8em}.stock-label-barcode{min-height:6mm;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}.stock-label-barcode svg{display:block;max-width:100%;width:auto;height:100%;max-height:100%}.stock-label-price{font-size:'+big+'em;font-weight:bold;white-space:nowrap}';
+}
+function stockLabelHTML(label,t,barcode){
+ return '<div class="stock-label" data-layout="'+esc(t.layout||'standard')+'">'+(t.show_name?'<div class="stock-label-name">'+esc(label.name)+'</div>':'')+(t.show_description&&label.description?'<div class="stock-label-description">'+esc(label.description)+'</div>':'')+(t.show_code?'<div class="stock-label-id" dir="ltr">'+esc(label.id)+'</div>':'')+'<div class="stock-label-barcode">'+barcode+'</div>'+(t.show_price?'<div class="stock-label-price">'+fmt(label.price)+' د.ع / '+esc(label.unit)+'</div>':'')+'</div>';
+}
 const kinds={in:'إدخال',out:'إخراج','return-in':'مرتجع إلى المخزن','return-out':'مرتجع من المخزن',assemble:'تجميع سيت',disassemble:'فك سيت'};
 const field=(id,label,type='text',value='')=>'<label>'+esc(label)+'<input class="input" id="stk-'+id+'" type="'+type+'" value="'+esc(value)+'"></label>';
 const select=(id,label,options)=>'<label>'+esc(label)+'<select class="input" id="stk-'+id+'">'+options+'</select></label>';
@@ -31,7 +38,7 @@ panel('تصنيف الصنف واللون والقياس والسعر','<form id
 panel('باركودات ووحدات الصنف نفسه','<p>الحبة والكرتون يستخدمان رصيداً واحداً. مثال: عامل الكرتون 12 يعني 12 حبة.</p><form id="stk-alias-form"><div class="workspace-form">'+select('alias-product','الصنف',pOptions)+field('alias-code','باركود بديل')+field('alias-unit','اسم الوحدة','text','كرتون')+field('alias-factor','عدد الحبات في الوحدة','number',12)+'</div><button class="btn">إضافة الباركود</button></form>'+table(['الباركود','الصنف','الوحدة','عدد الحبات'],products.flatMap(p=>p.barcodes.map(b=>[esc(b.code),esc(p.name),esc(b.unit),b.factor]))))+
 panel('مكونات السيت','<p>التجميع يصرف المكونات ويضيف السيت؛ الفك يعيد المكونات ويصرف السيت. لا يتضاعف المخزون أو قيمته.</p><div class="workspace-form">'+select('set','السيت',pOptions)+select('component','المكوّن',pOptions)+field('component-qty','العدد داخل السيت','number',1)+'</div>'+button('component-add','إضافة مكوّن')+'<div id="stk-recipe"></div>'+button('recipe-save','حفظ المكونات'))+
 panel('الوجبات والصلاحية',table(['المادة','المخزن','الوجبة','الصلاحية','الرصيد','الحالة'],batches.map(b=>[esc(b.name),esc(b.warehouse),esc(b.lot||'غير محددة'),esc(b.expiry||'غير محددة'),fmt(b.qty),b.expiry&&b.expiry<new Date().toISOString().slice(0,10)?'منتهي — ممنوع الصرف':'صالح'])))+
-panel('ملصقات الباركود','<div class="workspace-form">'+select('template','قالب محفوظ','<option value="">قالب جديد</option>'+opts(templates))+field('template-name','اسم القالب','text','ملصق 50 × 30')+field('label-code','باركود أو رمز الصنف')+field('width','العرض مم','number',50)+field('height','الارتفاع مم','number',30)+field('font','حجم الخط','number',12)+field('copies','عدد النسخ','number',1)+'<label><input id="stk-show-name" type="checkbox" checked> اسم الصنف</label><label><input id="stk-show-price" type="checkbox" checked> السعر الحالي</label></div>'+button('template-save','حفظ القالب')+' '+button('label-print','معاينة وطباعة الملصقات'))+
+panel('توليد الباركود وتصميم الملصق','<div class="workspace-form">'+select('label-product','اختيار المادة',pOptions)+field('label-id','رمز المادة')+field('label-name','اسم المادة')+field('label-description','وصف الملصق')+field('label-code','الباركود')+field('label-sale-price','سعر البيع بالدينار','number')+field('label-cost-price','سعر الشراء / التكلفة بالدينار','number')+'</div>'+button('label-generate','توليد وحفظ باركود للمادة')+'<div class="workspace-form">'+select('template','قالب محفوظ','<option value="">قالب جديد</option>'+opts(templates))+field('template-name','اسم القالب','text','ملصق 50 × 30')+select('label-layout','تصميم الملصق','<option value="standard">متوازن</option><option value="compact">باركود واضح</option><option value="price">سعر بارز</option>')+field('width','العرض مم','number',50)+field('height','الارتفاع مم','number',30)+field('font','حجم الخط','number',12)+field('copies','عدد النسخ','number',1)+'<label><input id="stk-show-name" type="checkbox" checked> طباعة اسم المادة</label><label><input id="stk-show-description" type="checkbox" checked> طباعة الوصف</label><label><input id="stk-show-code" type="checkbox" checked> طباعة رمز المادة</label><label><input id="stk-show-price" type="checkbox" checked> كتابة سعر البيع على الملصق</label></div><p class="sub">سعر الشراء للمراجعة فقط. سعر البيع المطبوع يُقرأ من بيانات المادة الحالية.</p><div id="stk-label-preview" style="overflow:auto;padding:16px;background:#edf3fa;border:1px solid #d6e3f0;border-radius:10px;min-height:150px"></div><p id="stk-label-preview-status" role="status"></p>'+button('template-save','حفظ تصميم الملصق')+' '+button('label-print','طباعة الملصقات'))+
 panel('المخازن والوحدات','<form id="stk-warehouse-form"><div class="workspace-form">'+field('warehouse-name','اسم المخزن')+field('warehouse-location','الموقع')+'</div><button class="btn">إضافة مخزن</button></form><form id="stk-unit-form"><div class="workspace-form">'+field('unit-id','رمز الوحدة')+field('unit-name','اسم الوحدة')+'</div><button class="btn">إضافة وحدة</button></form>');
 const notify=s=>$('message').textContent=s;
 const reload=()=>window.go('stock');
@@ -57,10 +64,55 @@ form('alias',()=>api('/api/stock/barcodes','POST',{product_id:value('alias-produ
 function drawRecipe(){$('recipe').innerHTML=table(['المكوّن','العدد','حذف'],recipe.map((c,i)=>[esc(products.find(p=>p.id===c.product_id)?.name),c.qty,'<button class="btn light stk-recipe-remove" data-index="'+i+'">حذف</button>']));body.querySelectorAll('.stk-recipe-remove').forEach(b=>b.onclick=()=>{recipe.splice(Number(b.dataset.index),1);drawRecipe()})}
 function loadRecipe(){recipe=(products.find(p=>p.id===value('set'))?.components||[]).map(c=>({product_id:c.component_id,qty:c.qty}));drawRecipe()}$('set').onchange=loadRecipe;loadRecipe();action('component-add',()=>{const product_id=value('component'),qty=Number(value('component-qty'));if(product_id===value('set')||recipe.some(c=>c.product_id===product_id)||!Number.isSafeInteger(qty)||qty<=0)throw Error('مكوّن مكرر أو كمية غير صحيحة');recipe.push({product_id,qty});drawRecipe()});action('recipe-save',async()=>{await api('/api/stock/recipe','POST',{product_id:value('set'),components:recipe});await reload()});
 form('warehouse',()=>api('/api/warehouses','POST',{name:value('warehouse-name'),location:value('warehouse-location')}));form('unit',()=>api('/api/units','POST',{id:value('unit-id'),name:value('unit-name')}));
-const labelPayload=()=>({name:value('template-name'),width:Number(value('width')),height:Number(value('height')),font:Number(value('font')),show_name:$('show-name').checked,show_price:$('show-price').checked});
-$('template').onchange=()=>{const t=templates.find(t=>t.id===Number(value('template')));if(!t)return;$('template-name').value=t.name;for(const key of ['width','height','font'])$(key).value=t.payload[key];$('show-name').checked=t.payload.show_name;$('show-price').checked=t.payload.show_price};
-action('template-save',async()=>{await api('/api/stock/label-templates','POST',labelPayload());await reload()});
-action('label-print',async()=>{const t=labelPayload(),copies=Number(value('copies'));if(!Number.isInteger(copies)||copies<1||copies>500||!Number.isInteger(t.width)||t.width<20||t.width>150||!Number.isInteger(t.height)||t.height<15||t.height>150||!Number.isInteger(t.font)||t.font<8||t.font>40)throw Error('تحقق من أبعاد الملصق والنسخ');const label=await api('/api/stock/label?code='+encodeURIComponent(value('label-code'))),svg=document.createElementNS('http://www.w3.org/2000/svg','svg');window.JsBarcode(svg,label.code,{format:'CODE128',height:35,width:1.5,margin:6,fontSize:12});const barcode=svg.outerHTML;const w=printDoc('ملصقات '+label.name,'<style>@page{size:'+t.width+'mm '+t.height+'mm;margin:0}body{padding:0;margin:0}.stock-label{box-sizing:border-box;width:'+t.width+'mm;height:'+t.height+'mm;padding:1mm;text-align:center;font-size:'+t.font+'px;overflow:hidden;break-after:page}.stock-label svg{display:block;max-width:100%;height:55%;margin:auto}</style>'+Array.from({length:copies},()=>'<div class="stock-label">'+(t.show_name?'<div>'+esc(label.name)+'</div>':'')+barcode+(t.show_price?'<div>'+fmt(label.price)+' د.ع / '+esc(label.unit)+'</div>':'')+'</div>').join(''));return w});
+const labelPayload=()=>({name:value('template-name'),width:Number(value('width')),height:Number(value('height')),font:Number(value('font')),layout:value('label-layout'),show_name:$('show-name').checked,show_description:$('show-description').checked,show_code:$('show-code').checked,show_price:$('show-price').checked});
+for(const id of ['label-id','label-name','label-sale-price','label-cost-price'])$(id).readOnly=true;
+let labelVersion=0,previewLabel=null,previewTimer;
+function labelProductFor(code){return products.find(p=>p.id===code||p.barcode===code||(p.barcodes||[]).some(b=>b.code===code))}
+function fillLabelProduct(p){
+ $('label-id').value=p?.id||'';$('label-name').value=p?.name||'';$('label-sale-price').value=p?.price||0;$('label-cost-price').value=p?.cost||0;
+ if(p){$('label-product').value=p.id;let description=[p.category,p.color,p.size].filter(Boolean).join(' / ');try{description=localStorage.getItem('alma-label-description:'+p.id)??description}catch{}$('label-description').value=description;}
+}
+function validLabelOptions(t,copies=1){
+ if(!Number.isInteger(copies)||copies<1||copies>500||!Number.isInteger(t.width)||t.width<20||t.width>150||!Number.isInteger(t.height)||t.height<15||t.height>150||!Number.isInteger(t.font)||t.font<8||t.font>40)throw Error('تحقق من الأبعاد وحجم الخط وعدد النسخ');
+}
+function labelBarcode(code){
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');window.JsBarcode(svg,code,{format:'CODE128',height:55,width:2,margin:8,fontSize:12,displayValue:true});return svg.outerHTML;
+}
+async function previewLabelDesign(){
+ const version=++labelVersion;previewLabel=null;
+ try{
+  const t=labelPayload();validLabelOptions(t);const code=value('label-code').trim();if(!code)throw Error('اختر مادة أو أدخل باركوداً مسجّلاً');
+  const label=await api('/api/stock/label?code='+encodeURIComponent(code));if(version!==labelVersion)return;
+  const p=labelProductFor(code);if(!p)throw Error('المادة غير موجودة في قائمة المخزون');if(value('label-id')!==p.id)fillLabelProduct(p);$('label-product').value=p.id;$('label-id').value=p.id;$('label-name').value=label.name;$('label-sale-price').value=label.price;
+  const alias=p.barcodes.find(b=>b.code===code);$('label-cost-price').value=Number(p.cost||0)*Number(alias?.factor||1);
+  const current={...label,id:p.id,description:value('label-description')};const barcode=labelBarcode(label.code);
+  $('label-preview').innerHTML='<style>'+stockLabelStyle(t)+'</style>'+stockLabelHTML(current,t,barcode);previewLabel=current;
+  const el=$('label-preview').querySelector('.stock-label');
+  if(el.scrollHeight>el.clientHeight+1||el.scrollWidth>el.clientWidth+1){previewLabel=null;throw Error('المحتوى أكبر من الملصق؛ كبّر القياسات أو قلّل حجم الخط أو أخفِ بعض الحقول');}
+  $('label-preview-status').textContent='معاينة فعلية '+t.width+' × '+t.height+' ملم — '+label.name;
+ }catch(err){if(version!==labelVersion)return;$('label-preview-status').textContent=err.message;}
+}
+function queueLabelPreview(){clearTimeout(previewTimer);previewTimer=setTimeout(previewLabelDesign,180);}
+$('label-product').onchange=()=>{const p=products.find(p=>p.id===value('label-product'));fillLabelProduct(p);$('label-code').value=p?.barcode||p?.barcodes?.[0]?.code||p?.id||'';previewLabelDesign();};
+$('label-code').onchange=()=>{const p=labelProductFor(value('label-code').trim());fillLabelProduct(p);previewLabelDesign();};
+$('label-code').oninput=queueLabelPreview;
+$('label-description').oninput=()=>{const p=labelProductFor(value('label-code').trim());if(p)try{localStorage.setItem('alma-label-description:'+p.id,value('label-description'))}catch{}queueLabelPreview();};
+for(const id of ['width','height','font','label-layout','show-name','show-description','show-code','show-price'])$(id).oninput=queueLabelPreview;
+$('template').onchange=()=>{const t=templates.find(t=>t.id===Number(value('template')));if(!t)return;$('template-name').value=t.name;for(const key of ['width','height','font'])$(key).value=t.payload[key];$('label-layout').value=t.payload.layout||'standard';for(const [id,key] of [['show-name','show_name'],['show-price','show_price'],['show-description','show_description'],['show-code','show_code']])$(id).checked=t.payload[key]!==false;previewLabelDesign();};
+action('label-generate',async()=>{
+ const p=products.find(p=>p.id===value('label-product'));if(!p)throw Error('اختر المادة أولاً');
+ const generated=await api('/api/stock/barcodes/generate','POST',{});
+ await api('/api/stock/barcodes','POST',{product_id:p.id,code:generated.code,unit:'حبة',factor:1});
+ p.barcodes.push({code:generated.code,product_id:p.id,unit:'حبة',factor:1});fillLabelProduct(p);$('label-code').value=generated.code;
+ await previewLabelDesign();notify('تم حفظ الباركود الجديد للمادة دون تغيير باركود المصنع أو الرصيد');
+});
+action('template-save',async()=>{const t=labelPayload();validLabelOptions(t);await api('/api/stock/label-templates','POST',t);notify('تم حفظ تصميم الملصق');const all=await api('/api/stock/label-templates');templates.splice(0,templates.length,...all);$('template').innerHTML='<option value="">قالب جديد</option>'+opts(templates);$('template').value=String(templates.find(x=>x.name===t.name)?.id||'');});
+action('label-print',async()=>{
+ const t=labelPayload(),copies=Number(value('copies'));validLabelOptions(t,copies);await previewLabelDesign();if(!previewLabel)throw Error('صحّح معاينة الملصق قبل الطباعة');
+ const label=previewLabel,barcode=labelBarcode(label.code);
+ return printDoc('ملصقات '+label.name,'<style>@page{size:'+t.width+'mm '+t.height+'mm;margin:0}body{padding:0;margin:0}'+stockLabelStyle(t)+'.stock-label{break-after:page}.stock-label:last-of-type{break-after:auto}</style>'+Array.from({length:copies},()=>stockLabelHTML(label,t,barcode)).join(''));
+});
+$('label-product').onchange();
 // Retain the existing transfer, reservation, count and CSV tools in a folded area.
 const tools=document.createElement('details');tools.className='panel';tools.innerHTML='<summary>تحويل وجرد وحجوزات واستيراد</summary><div id="stk-tools"></div>';body.append(tools);
 if(window.decorateERPPage){const host=$('tools');await window.decorateERPPage('stock',host);for(const p of host.querySelectorAll('.panel'))if(['الأرصدة حسب المخزن','إضافة مخزن','إضافة وحدة'].includes(p.querySelector('h3')?.textContent))p.remove();for(const id of ['erp-form-transfer','erp-form-stockcount']){const b=host.querySelector('#'+id+' button[type=submit]');if(b)b.textContent='اعتماد وترحيل'}}
