@@ -359,10 +359,16 @@ body.innerHTML='<div class="workspace-grid">'+actions.map((x,i)=>'<div class="wo
 }catch(e){body.innerHTML='<div class="panel workspace-banner">تعذر تحميل بيانات القسم: '+htmlEscape(e.message)+'</div>';if(['accounts','reports'].includes(page)){const b=document.createElement('button');b.className='btn light';b.id='account-diagnostics';b.textContent='إظهار معلومات التشغيل للتشخيص';body.append(b);b.onclick=async()=>{const pre=document.createElement('pre');pre.style='white-space:pre-wrap;direction:ltr;text-align:left';body.append(pre);try{const health=await fetch('/api/health').then(r=>r.json());const details=await apiRequest('/api/diagnostics/accounting');pre.textContent=JSON.stringify({health,...details},null,2)}catch(err){pre.textContent=err.message}}}}
 }
 // Consistent, non-destructive workspace navigation. Never apply to the home dashboard or POS.
+function syncWorkspaceSection(section){
+ const summary=Array.from(section.children).find(el=>el.tagName==='SUMMARY');
+ const content=Array.from(section.children).find(el=>el.dataset.wsFoldContent==='true');
+ if(summary)summary.setAttribute('aria-expanded',String(section.open));
+ if(content)content.hidden=!section.open;
+}
 function organizeWorkspaceSections(page){
  if(!pages[page]||page==='home'||page==='pos')return;
  const body=document.getElementById('ws-body');if(!body)return;
- const panels=Array.from(body.children).filter(el=>el.classList?.contains('panel'));
+ const panels=Array.from(body.querySelectorAll('.panel'));
  // Forms are open, while large registers and supplementary panels stay folded.
  const primaryKeywords=/إضافة|فاتورة .*جديدة|فاتورة مبيعات|سند قبض|سند صرف|قيد يومية|إعدادات|إجراء|مرتجع فاتورة|تسجيل|تعديل/;
  const registerKeywords=/سجل|آخر|الفواتير|المرتجعات|القيود|الحركات|الأرصدة|ميزان|دليل|تقارير|الحسابات|المواد والأرصدة/;
@@ -389,6 +395,29 @@ function organizeWorkspaceSections(page){
   const content=document.createElement('div');content.className='ws-section-content';
   while(panel.firstChild)content.append(panel.firstChild);
   details.append(content);panel.replaceWith(details);
+ }
+ // Keep one delegated control on the workspace, including panels added by decorators.
+ if(!body.dataset.wsToggleBound){
+  body.dataset.wsToggleBound='true';
+  body.addEventListener('click',event=>{
+   const summary=event.target.closest('summary');
+   if(!summary||!body.contains(summary)||summary.parentElement.tagName!=='DETAILS')return;
+   if(event.target.closest('a,button,input,select,textarea'))return;
+   event.preventDefault();
+   const section=summary.parentElement;section.open=!section.open;syncWorkspaceSection(section);
+  });
+  body.addEventListener('toggle',event=>{if(event.target.tagName==='DETAILS')syncWorkspaceSection(event.target)},true);
+ }
+ for(const section of body.querySelectorAll('details')){
+  const summary=Array.from(section.children).find(el=>el.tagName==='SUMMARY');if(!summary)continue;
+  // A single content wrapper makes closed state explicit and preserves form listeners.
+  let content=Array.from(section.children).find(el=>el.dataset.wsFoldContent==='true');
+  if(!content){
+   content=document.createElement('div');content.dataset.wsFoldContent='true';
+   for(const node of Array.from(section.childNodes))if(node!==summary)content.append(node);
+   section.append(content);
+  }
+  syncWorkspaceSection(section);
  }
  // Tables remain the same nodes: preserve event listeners and all data.
  body.querySelectorAll('.ws-modern-section table,.ws-collapsible table').forEach(table=>{
