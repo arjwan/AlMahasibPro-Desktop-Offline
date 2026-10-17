@@ -1,3 +1,4 @@
+import {encodeInvoiceQrParts,decodeInvoiceQrParts,inspectInvoiceQrPart} from './invoice-qr.mjs';
 import {migrateProviderSecrets} from './secrets.mjs';
 import http from 'node:http';
 import {ensureJournalReference} from './accounting-schema.mjs';
@@ -7,6 +8,7 @@ import {extendERP} from './erp.mjs';
 import {scannerERP} from './scanner.mjs';
 import {currencyERP} from './currency.mjs';
 import {advancedERP} from './advanced.mjs';
+import {createLicensing} from './licensing.mjs';
 import {createAccess} from './access.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -42,7 +44,9 @@ function migrate(){
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
     const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
-    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const movementColumns=existingTables.has('inventory_moves')?db.prepare('PRAGMA table_info(inventory_moves)').all().map(x=>x.name):[];
+    const movementFields=[['warehouse_id','INTEGER REFERENCES warehouses(id)'],['type',"TEXT CHECK(type IN ('purchase','sale','transfer','adjustment','return'))"],['reference','TEXT'],['date',"TEXT NOT NULL DEFAULT ''"],['created_at',"TEXT NOT NULL DEFAULT ''"]];
+    const schemaChange=movementFields.some(([name])=>!movementColumns.includes(name))||!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji','archived'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)db.prepare('VACUUM INTO ?').run(backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -89,13 +93,26 @@ function migrate(){
     for(const [column,definition] of [
       ['barcode','TEXT'],['unit_id','TEXT'],['category','TEXT'],
       ['cost','INTEGER NOT NULL DEFAULT 0'],['price','INTEGER NOT NULL DEFAULT 0'],
-      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT']
+      ['min_stock','INTEGER NOT NULL DEFAULT 0'],['emoji','TEXT'],
+      ['archived','INTEGER NOT NULL DEFAULT 0']
     ]){
       if(!productColumns.has(column)){
         log('Adding missing products column: '+column);
         db.exec('ALTER TABLE products ADD COLUMN '+column+' '+definition);
       }
     }
+    // CREATE TABLE IF NOT EXISTS cannot repair installed tables, even at version 6.
+    // Preserve historical rows; unknown movement types stay NULL, never guessed.
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      const existing=columns('inventory_moves');
+      for(const [name,definition] of movementFields)if(!existing.has(name)){
+        db.exec('ALTER TABLE inventory_moves ADD COLUMN '+name+' '+definition);
+        log('Adding missing inventory_moves column: '+name);
+      }
+      db.prepare('SELECT product_id,warehouse_id,delta,type,reference,date,created_at FROM inventory_moves LIMIT 0').all();
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error}
     if(!columns('sale_invoices').has('warehouse_id'))db.exec('ALTER TABLE sale_invoices ADD COLUMN warehouse_id INTEGER NOT NULL DEFAULT 1');
     // Older installed databases can already have journal_entries without reference.
     // Reconcile before ERP queries use it; preserve amounts and never invent references.
@@ -292,7 +309,7 @@ function paymentSummary(invoice){
  const paid=invoice.paid??(invoice.payment_method==='credit'?0:invoice.net),remaining=Math.max(0,invoice.net-paid-r.amount+r.refund);
  return {...invoice,remaining,payment_status:invoice.status==='held'?'unpaid':remaining===0?'paid':paid>r.refund?'partial':'unpaid'};
 }
-const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1)}));
+const all=()=>db.prepare('SELECT p.*, COALESCE(SUM(pw.stock),0) AS stock FROM products p LEFT JOIN product_warehouse pw ON pw.product_id=p.id WHERE p.archived=0 GROUP BY p.id ORDER BY p.name').all().map(p=>({...p,available:erp.available(p.id,1),barcodes:db.prepare('SELECT code,unit,factor FROM stock_barcodes WHERE product_id=?').all(p.id)}));
 function send(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function inputError(message){const e=new Error(message);e.status=400;throw e}
 function readJSON(body){try{const value=JSON.parse(body||'{}');if(!value||Array.isArray(value)||typeof value!=='object')inputError('بيانات JSON غير صحيحة');return value}catch{inputError('بيانات JSON غير صحيحة')}}
@@ -326,7 +343,8 @@ function transaction(fn){if(db.isTransaction)return fn();db.exec('BEGIN IMMEDIAT
 const erp=extendERP({db,dbPath,send,inputError,readJSON,transaction,inventory,postJournal,postSale});
 const advanced=advancedERP({db,inputError,postJournal,inventory,erp});erp.setAdvanced(advanced);
 const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON});
-const access=createAccess({db,send,readJSON,inputError,audit:erp.audit});db.exec('PRAGMA user_version=6');
+const licensing=createLicensing({dbPath,send,readJSON});
+const access=createAccess({db,send,readJSON,inputError,audit:erp.audit,licensing});db.exec('PRAGMA user_version=6');
 const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
 const handleSupplier=supplierReports({db,inputError,send});
 stockERPService=stockERP({db,inputError,inventory,erp,transaction,postJournal,send,readJSON});
@@ -336,6 +354,7 @@ const handler=(req,res)=>{
  try{
  const url=new URL(req.url,'http://localhost'),p=url.pathname;
  erp.setActor(null);
+ if(p.startsWith('/api/v1/market/scanner')&&!licensing.allowed(req))return send(res,403,{error:'يتطلب اتصال الشبكة ترخيصاً فعالاً'});
  if(scanner.publicHandle(req,res,p,body))return;
  if(access.handle(req,res,p,body))return;
  erp.setActor(req.user?.id||null);
@@ -347,6 +366,17 @@ const handler=(req,res)=>{
  if(cached){if(cached.route!==route||cached.payload!==payload)inputError('معرف العملية مستخدم لطلب مختلف');return send(res,200,JSON.parse(cached.result))}
  operation={key,route,payload};
  }
+ if(req.method==='POST'&&p==='/api/invoice-qr/decode'){
+  try{const v=readJSON(body);if(v.part!==undefined)return send(res,200,inspectInvoiceQrPart(v.part));return send(res,200,decodeInvoiceQrParts(v.parts))}catch(e){return send(res,400,{error:e.message})}
+ }
+ const qrMatch=p.match(/^\/api\/(purchases|invoices)\/([0-9]+)\/qr$/);
+ if(req.method==='GET'&&qrMatch){
+  const purchase=qrMatch[1]==='purchases',id=Number(qrMatch[2]);
+  const invoice=db.prepare(purchase?'SELECT i.*,p.name AS party_name FROM purchase_invoices i LEFT JOIN partners p ON p.id=i.partner_id WHERE i.id=?':'SELECT i.*,p.name AS party_name FROM sale_invoices i LEFT JOIN partners p ON p.id=i.partner_id WHERE i.id=?').get(id);
+  if(!invoice)return send(res,404,{error:'الفاتورة غير موجودة'});
+  const lines=db.prepare(purchase?'SELECT i.*,p.name AS product_name,p.barcode FROM purchase_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id':'SELECT i.*,COALESCE(i.product_name,p.name) AS name,p.barcode FROM sale_items i LEFT JOIN products p ON p.id=i.product_id WHERE i.invoice_id=? ORDER BY i.id').all(id);
+  try{return send(res,200,{invoice_no:invoice.invoice_no,kind:purchase?'purchase':'sale',parts:encodeInvoiceQrParts({...invoice,currency:'IQD',lines},purchase?'purchase':'sale')})}catch(e){return send(res,422,{error:e.message})}
+ }
  if(stockERPService.handle(req,res,p,body,url))return;
  if(handleSupplier(req,res,p,url))return;
  if(scanner.handle(req,res,p,body))return;
@@ -354,15 +384,16 @@ const handler=(req,res)=>{
  if(erp.handle(req,res,p,body,url))return;
  if(req.method==='GET'&&p==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'index.html')));return}
  if(req.method==='GET'&&p==='/erp-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'erp-ui.js')));return}
+ if(req.method==='GET'&&p==='/invoice-qr-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'invoice-qr-ui.js')));return}
  if(req.method==='GET'&&p==='/stock-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'stock-ui.js')));return}
  if(req.method==='GET'&&p==='/jsbarcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'node_modules/jsbarcode/dist/JsBarcode.all.min.js')));return}
  if(req.method==='GET'&&p==='/advanced-ui.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'});res.end(fs.readFileSync(path.join(root,'advanced-ui.js')));return}
  if(req.method==='GET'&&p==='/scanner-qrcode.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'scanner-qrcode.js')));return}
- if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<html dir="rtl"><meta charset="utf-8"><h2>ربط ماسح المحاسب برو</h2><p>افتح تطبيق الماسح الحالي وامسح رمز الربط في شاشة الكاشير.</p></html>');return}
+ if(req.method==='GET'&&p==='/market-scanner.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(fs.readFileSync(path.join(root,'market-scanner.html')));return}
  if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,instance:process.env.ALMAHASIB_INSTANCE||null,build:runtimeBuild,accounting_schema_ok:true});
  if(req.method==='GET'&&p==='/api/diagnostics/accounting'){
  if(req.user.role!=='admin')return send(res,403,{error:'التشخيص للمدير فقط'});
- return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true});
+ return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true,inventory_columns:db.prepare('PRAGMA table_info(inventory_moves)').all().map(x=>x.name),inventory_type_present:true});
  }
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
@@ -387,9 +418,12 @@ const handler=(req,res)=>{
  const v=readJSON(body),id=String(v.id||'').trim(),name=String(v.name||'').trim(),price=Number(v.price),cost=Number(v.cost||0);
  if(!id||!name||!Number.isSafeInteger(price)||price<0||!Number.isSafeInteger(cost)||cost<0)inputError('الرمز والاسم والسعر والتكلفة مطلوبة بصيغة صحيحة');
  if(!Number.isSafeInteger(Number(v.min_stock||0))||Number(v.min_stock||0)<0)inputError('حد الرصيد غير صحيح');
- if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,String(v.barcode||'')))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
+ const barcode=String(v.barcode??'').trim();if(barcode.length>256||/[\x00-\x1f\x7f]/.test(barcode))inputError('الباركود غير صحيح');
+ if(db.prepare('SELECT id FROM products WHERE barcode=? OR id=?').get(id,barcode))inputError('الرمز أو الباركود مستخدم لمادة أخرى');
+ if(db.prepare('SELECT code FROM stock_barcodes WHERE code=? OR code=?').get(id,barcode))inputError('الرمز أو الباركود مستخدم كوحدة بديلة');
  if(v.unit_id&&!db.prepare('SELECT id FROM units WHERE id=?').get(String(v.unit_id)))inputError('الوحدة غير موجودة');
- db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id,name,v.barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null);
+ const image=String(v.image_data||'');if(image&&(image.length>400000||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image)))inputError('الصورة تحتاج PNG أو JPEG أو WebP بحجم صغير');
+ db.prepare('INSERT INTO products(id,name,barcode,category,cost,price,min_stock,emoji,unit_id,image_data) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,name,barcode||null,v.category||null,cost,price,Number(v.min_stock||0),'📦',v.unit_id||null,image||null);
  return send(res,201,{ok:true,id});
  }
  if(req.method==='POST'&&p==='/api/stock/adjust'){
@@ -589,7 +623,7 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/api/journal')return send(res,200,db.prepare("SELECT e.id,e.date,e.description,e.reference,e.created_at,COALESCE(SUM(i.debit),0) AS debit,COALESCE(SUM(i.credit),0) AS credit FROM journal_entries e LEFT JOIN journal_items i ON i.entry_id=e.id GROUP BY e.id ORDER BY e.id DESC LIMIT 200").all());
  if(req.method==='POST'&&p==='/api/journal'){
  const v=readJSON(body),lines=v.lines;
- if(/^(S-|P-|R-|V-|PAY-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
+ if(/^(S-|P-|R-|V-|PAY-|EXP-|STK-|SHIP-|FX-|YEARCLOSE-|REOPEN-|COUNT-|ADJ-|ASSET-|DEP-|CLOSE-)/.test(String(v.reference||'')))inputError('هذا المرجع محجوز للمستندات الآلية');
  erp.periodOpen(v.date||new Date().toISOString().slice(0,10));
  if(!Array.isArray(lines)||lines.length<2)inputError('القيد يحتاج سطرين على الأقل');
  const result=transaction(()=>{
@@ -615,7 +649,7 @@ const handler=(req,res)=>{
  const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN shipping_version>0 THEN (SELECT SUM(net) FROM shipments s WHERE s.invoice_id=i.id) ELSE net END),0) AS sales FROM sale_invoices i WHERE (status='paid' AND shipping_version=0) OR shipping_version>0").get();
  const day=new Date().toISOString().slice(0,10);const today=db.prepare("SELECT (SELECT COALESCE(SUM(net),0) FROM sale_invoices WHERE status='paid' AND shipping_version=0 AND date=?)+(SELECT COALESCE(SUM(net),0) FROM shipments WHERE substr(date,1,10)=?) AS total").get(day,day);
  const stock=db.prepare('SELECT COUNT(*) AS products,COALESCE(SUM(stock),0) AS units FROM product_warehouse').get();
- return send(res,200,{...sales,todaySales:today.total,products:all().length,stockUnits:stock.units,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
+ return send(res,200,{...sales,todaySales:today.total,cashBalance:db.prepare("SELECT COALESCE(SUM(debit-credit),0) AS amount FROM journal_items WHERE account_id='101'").get().amount,products:all().length,stockUnits:stock.units,heldPOS:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0 AND source='pos'").get().n,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
  }
  return send(res,404,{error:'المسار غير موجود'});
  }catch(e){send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة':e.message})}

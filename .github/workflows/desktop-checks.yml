@@ -14,6 +14,8 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      ALMAHASIB_LICENSE_PUBLIC_KEY: ${{ vars.ALMAHASIB_LICENSE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,18 +23,32 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Prepare developer public verification key
+        if: env.ALMAHASIB_LICENSE_PUBLIC_KEY != ''
+        shell: pwsh
+        run: '[IO.File]::WriteAllText((Join-Path $PWD license-public.pem), $env:ALMAHASIB_LICENSE_PUBLIC_KEY)'
       - run: npm test
       - run: node tests/electron.smoke.cjs
       - run: npx electron tests/electron-report.smoke.cjs
+      - run: npx electron tests/electron-license.smoke.cjs
       - run: npm install --no-save --package-lock=false playwright@1.56.0
       - run: npx playwright install chromium
       - run: node tests/ui.smoke.mjs
+      - run: npm run test:license-ui
       - run: node tests/stock-ui.smoke.mjs
-      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
-        name: Build Windows installer after all checks
+      - run: npm run test:scanner
+      - run: npm run demo:create
+      - run: npm run test:demo
+      - run: npm run test:interface-review
+      - run: npm run test:pos-layout
+      - name: Build Windows installer after all checks
+        if: github.event_name == 'workflow_dispatch' && inputs.build
         run: npx electron-builder --win nsis --x64 --publish never
-      - if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.build == true)
-        uses: actions/upload-artifact@v4
+      - name: Install, launch and upgrade the built Windows package
+        if: github.event_name == 'workflow_dispatch' && inputs.build
+        run: node tests/windows-installer.smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.build
         with:
           name: AlMahasibPro-Offline-Windows
           path: dist/*.exe

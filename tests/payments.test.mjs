@@ -24,9 +24,9 @@ async function created(f,path,body){const r=await f.request(path,'POST',body);as
 test('POS atomic mixed payment, retry, rejection rollback, debt collection and returns',async()=>{
  const f=await fixture();try{
  await f.login();await created(f,'/api/products',{id:'PAY',name:'Payment test',price:200,cost:100});
- const adjustment=()=>f.request('/api/stock/adjust','POST',{product_id:'PAY',delta:20},{'Idempotency-Key':'payment-stock-seed'});
- const adjusted=await adjustment();assert.equal(adjusted.status,201,JSON.stringify(adjusted.data));
- assert.deepEqual((await adjustment()).data,adjusted.data);
+ const seedAdjustment=()=>f.request('/api/stock/adjust','POST',{product_id:'PAY',delta:20},{'Idempotency-Key':'payment-stock-seed'});
+ const adjusted=await seedAdjustment();assert.equal(adjusted.status,201,JSON.stringify(adjusted.data));
+ assert.deepEqual((await seedAdjustment()).data,adjusted.data);
  assert.equal((await f.request('/api/products')).data[0].stock,20);
  const customer=await created(f,'/api/partners',{name:'Payment customer',type:'customer'});
  const payload={partner_id:customer.id,lines:[{id:'PAY',qty:2}],payments:[{method:'cash',amount:100},{method:'card',provider:'independent_pos',reference:'TERMINAL-1',amount:200}]};
@@ -54,11 +54,19 @@ test('POS atomic mixed payment, retry, rejection rollback, debt collection and r
  assert.equal((await f.request('/api/payments','POST',pay)).status,201);
  assert.equal((await f.request('/api/payments','POST',{...pay,amount:99})).status,400);
  assert.equal((await f.request('/api/payments','POST',{...pay,idempotency_key:'over'})).status,400);
+ const paymentsJournal=(await f.request('/api/journal')).data.filter(x=>x.reference?.startsWith('PAY-'));
+ assert.ok(paymentsJournal.length>=3);
+ for(const entry of paymentsJournal){assert.equal((await f.request('/api/journal/'+entry.id+'/reverse','POST',{})).status,400);assert.equal((await f.request('/api/journal','POST',{description:'Reserved',reference:entry.reference,lines:[{account_id:'101',debit:1},{account_id:'3',credit:1}]})).status,400)}
+ assert.equal((await f.request('/api/invoices/'+invoice.id)).data.paid,400);
+ const adjustment={product_id:'PAY',delta:1};
+ assert.equal((await f.request('/api/stock/adjust','POST',adjustment,{'Idempotency-Key':'adjust-once'})).status,201);
+ assert.deepEqual((await f.request('/api/stock/adjust','POST',adjustment,{'Idempotency-Key':'adjust-once'})).data,{ok:true});
+ assert.equal((await f.request('/api/products')).data[0].stock,19);
  const ret={kind:'sale',invoice_id:invoice.id,cash_refund:200,reason:'Partial card reversal',lines:[{item_id:invoice.lines[0].id,qty:1}]};
  const returned=await f.request('/api/returns','POST',ret,{'Idempotency-Key':'return-1'});assert.equal(returned.status,201,JSON.stringify(returned.data));
  assert.deepEqual((await f.request('/api/returns','POST',ret,{'Idempotency-Key':'return-1'})).data,returned.data);
  db=new DatabaseSync(f.dbPath);assert.equal(db.prepare("SELECT SUM(debit-credit) AS n FROM journal_items WHERE account_id='pos-card-clearing'").get().n,0);assert.equal(db.prepare('SELECT card_refund FROM document_returns').get().card_refund,200);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sale_invoices').get().n,1);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM payment_transactions').get().n,3);db.close();
- assert.equal((await f.request('/api/products')).data[0].stock,19);
+ assert.equal((await f.request('/api/products')).data[0].stock,20);
  const report=(await f.request('/api/reports/financial')).data;assert.equal(report.debit,report.credit);assert.equal(report.profit,100);
  const partial=await make({partner_id:customer.id,paid:0,payment:'آجل',lines:[{id:'PAY',qty:1}]},'debt-return');assert.equal(partial.status,201);
  const detail=(await f.request('/api/invoices/'+partial.data.id)).data;

@@ -98,7 +98,11 @@ test('ERP: asset depreciation, budgets, bank matching, CSV import, count and fiv
 
 test('ERP: old database migration preserves products and startup does not duplicate warehouse',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'alma-legacy-')),database=join(dir,'legacy.sqlite');const old=new DatabaseSync(database);old.exec("CREATE TABLE products(id TEXT PRIMARY KEY,name TEXT NOT NULL,price INTEGER NOT NULL);INSERT INTO products VALUES('legacy','قديم',100);PRAGMA user_version=2");old.close();let child;try{
- for(let run=0;run<2;run++){const server=await startServer(database);child=server.child;await server.stop();}
+ for(let run=0;run<2;run++){const server=await startServer(database);child=server.child;
+ const login=await fetch(server.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});assert.equal(login.status,200);
+ const cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
+ const products=await fetch(server.base+'/api/products',{headers:{Cookie:cookie}});assert.equal(products.status,200);const rows=await products.json();assert.equal(rows.find(x=>x.id==='legacy').price,100);
+ await server.stop();}
  const check=new DatabaseSync(database,{readOnly:true});assert.equal(check.prepare("SELECT name FROM products WHERE id='legacy'").get().name,'قديم');assert.ok(check.prepare('PRAGMA table_info(products)').all().some(x=>x.name==='barcode'));assert.equal(check.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,1);assert.equal(check.prepare('PRAGMA integrity_check').get().integrity_check,'ok');check.close();
  }finally{await stopChild(child);rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
@@ -157,7 +161,10 @@ test('ERP: existing scanner protocol pairs over trusted test TLS, queues barcode
  const base='/api/v1/market/scanner/'+pair.token;assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request(base+'/status')).status,403);const event=await secure(base+'/scan','POST',{barcode:'SCANNER-LOCAL'});assert.equal(event.status,200);
  let poll=await f.request(base+'/poll');assert.equal(poll.status,200);assert.equal(poll.data.events[0].barcode,'SCANNER-LOCAL');assert.equal((await f.request(base+'/poll?since='+event.data.id)).data.events.length,0);
  const other=await fetch(f.base()+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});const cookie=other.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');const foreign=await fetch(f.base()+base+'/poll',{headers:{Cookie:cookie}});assert.equal(foreign.status,410);
- assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);
+ const second=await created(f,'/api/v1/market/scanner/pair',{});assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request('/api/v1/market/scanner/pairs')).data.length,2);
+ await f.stop();await f.start();await f.login();assert.equal((await f.request(base+'/poll')).status,200);assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request('/api/v1/market/scanner/pairs')).data.length,2);
+ assert.equal((await secure('/api/v1/market/scanner/'+second.token+'/scan','POST',{barcode:'SECOND-PHONE'})).status,200);assert.equal((await f.request('/api/v1/market/scanner/'+second.token+'/poll')).data.events[0].barcode,'SECOND-PHONE');
+ assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await secure(base+'/status')).status,410);assert.equal((await secure('/api/v1/market/scanner/'+second.token+'/status')).status,200);
  }finally{await f.cleanup()}
 });
 
@@ -234,5 +241,13 @@ test('Suppliers: detail, filtered opening/closing, draft exclusion, exports and 
  const excel=await f.request(base+'&format=xlsx');assert.equal(excel.status,200);assert.equal(excel.data.readUInt32LE(0),0x04034b50);assert.ok(excel.data.includes(Buffer.from('xl/worksheets/sheet1.xml')));
  const html=await f.request(base+'&format=print');assert.ok(html.data.toString().includes('مورد كشف &lt;آمن&gt;'));assert.ok(!html.data.toString().includes('<آمن>'));
  await created(f,'/api/users',{username:'noreport',password:'password123',role:'cashier',modules:['sales']});await f.request('/api/auth/logout','POST',{});await f.login('noreport','password123');assert.equal((await f.request(base)).status,403);assert.equal((await f.request(base+'&format=xlsx')).status,403);
+ }finally{await f.cleanup()}
+});
+
+test('ERP: invoice QR uses stored purchase/sale lines and enforces document permissions',async()=>{
+ const f=await fixture();try{await f.login();const supplier=await created(f,'/api/partners',{name:'مورد QR',type:'supplier'});await created(f,'/api/products',{id:'QR-ITEM',name:'جبن QR',barcode:'0012345678905',cost:100,price:150});const purchase=await created(f,'/api/purchases',{partner_id:supplier.id,paid:0,lines:[{product_id:'QR-ITEM',qty:4,cost:100}]});
+ const qr=await f.request('/api/purchases/'+purchase.id+'/qr');assert.equal(qr.status,200);const decoded=await f.request('/api/invoice-qr/decode','POST',{parts:qr.data.parts});assert.equal(decoded.status,200);assert.equal(decoded.data.no,purchase.invoice_no);assert.equal(decoded.data.lines[0].barcode,'0012345678905');assert.equal(decoded.data.lines[0].qty,4);assert.equal(decoded.data.net,400);
+ const sale=await created(f,'/api/invoices',{lines:[{id:'QR-ITEM',qty:2}]});const saleQr=(await f.request('/api/invoices/'+sale.id+'/qr')).data;assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:saleQr.parts})).data.net,300);assert.equal((await f.request('/api/purchases/999999/qr')).status,404);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:['bad']})).status,400);
+ await created(f,'/api/users',{username:'qr-buyer',password:'testpass123',role:'cashier',modules:['purchases']});await f.login('qr-buyer','testpass123');assert.equal((await f.request('/api/purchases/'+purchase.id+'/qr')).status,200);assert.equal((await f.request('/api/invoices/'+sale.id+'/qr')).status,403);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:qr.data.parts})).status,200);
  }finally{await f.cleanup()}
 });
