@@ -44,7 +44,9 @@ function migrate(){
     const existingTables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));
     const productSchema=existingTables.has('products')?db.prepare('PRAGMA table_info(products)').all().map(x=>x.name):[];
     const entryColumns=existingTables.has('journal_entries')?db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name):[];
-    const schemaChange=!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji'].some(name=>!productSchema.includes(name));
+    const movementColumns=existingTables.has('inventory_moves')?db.prepare('PRAGMA table_info(inventory_moves)').all().map(x=>x.name):[];
+    const movementFields=[['warehouse_id','INTEGER REFERENCES warehouses(id)'],['type',"TEXT CHECK(type IN ('purchase','sale','transfer','adjustment','return'))"],['reference','TEXT'],['date',"TEXT NOT NULL DEFAULT ''"],['created_at',"TEXT NOT NULL DEFAULT ''"]];
+    const schemaChange=movementFields.some(([name])=>!movementColumns.includes(name))||!entryColumns.includes('reference')||currentVersion<6||requiredTables.some(table=>!existingTables.has(table))||['barcode','cost','price','unit_id','category','min_stock','emoji','archived'].some(name=>!productSchema.includes(name));
     if(schemaChange&&fs.statSync(dbPath).size>0)db.prepare('VACUUM INTO ?').run(backupPath);
     if(currentVersion<1 || requiredTables.some(table=>!existingTables.has(table))){
         log('Migrating to v1 (Comprehensive Business Schema)');
@@ -99,6 +101,18 @@ function migrate(){
         db.exec('ALTER TABLE products ADD COLUMN '+column+' '+definition);
       }
     }
+    // CREATE TABLE IF NOT EXISTS cannot repair installed tables, even at version 6.
+    // Preserve historical rows; unknown movement types stay NULL, never guessed.
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      const existing=columns('inventory_moves');
+      for(const [name,definition] of movementFields)if(!existing.has(name)){
+        db.exec('ALTER TABLE inventory_moves ADD COLUMN '+name+' '+definition);
+        log('Adding missing inventory_moves column: '+name);
+      }
+      db.prepare('SELECT product_id,warehouse_id,delta,type,reference,date,created_at FROM inventory_moves LIMIT 0').all();
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error}
     if(!columns('sale_invoices').has('warehouse_id'))db.exec('ALTER TABLE sale_invoices ADD COLUMN warehouse_id INTEGER NOT NULL DEFAULT 1');
     // Older installed databases can already have journal_entries without reference.
     // Reconcile before ERP queries use it; preserve amounts and never invent references.
@@ -379,7 +393,7 @@ const handler=(req,res)=>{
  if(req.method==='GET'&&p==='/api/health')return send(res,200,{status:'ok',version:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,instance:process.env.ALMAHASIB_INSTANCE||null,build:runtimeBuild,accounting_schema_ok:true});
  if(req.method==='GET'&&p==='/api/diagnostics/accounting'){
  if(req.user.role!=='admin')return send(res,403,{error:'التشخيص للمدير فقط'});
- return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true});
+ return send(res,200,{build:runtimeBuild,database:dbPath,schema_version:db.prepare('PRAGMA user_version').get().user_version,journal_columns:db.prepare('PRAGMA table_info(journal_entries)').all().map(x=>x.name),reference_present:true,inventory_columns:db.prepare('PRAGMA table_info(inventory_moves)').all().map(x=>x.name),inventory_type_present:true});
  }
  if(req.method==='GET'&&p==='/api/products')return send(res,200,all());
  if(req.method==='GET'&&p==='/api/warehouses')return send(res,200,db.prepare('SELECT * FROM warehouses ORDER BY id').all());
