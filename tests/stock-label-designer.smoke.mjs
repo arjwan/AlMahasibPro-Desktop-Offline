@@ -28,6 +28,27 @@ try{
  await page.locator('#stk-show-price').uncheck();await page.waitForFunction(()=>!document.querySelector('#stk-label-preview .stock-label-price'));
  await page.locator('#stk-show-price').check();await page.waitForFunction(()=>document.querySelector('#stk-label-preview .stock-label-price'));
  await page.locator('#stk-label-generate').click();await page.waitForFunction(()=>document.getElementById('stk-label-code').value==='2000000000022');assert.ok(barcodeSaved);
+ await page.locator('#stk-height').fill('50');
+ await page.locator('#stk-label-name').fill('صابون معدل');
+ await page.locator('#stk-label-id').fill('CUSTOM-1');
+ await page.locator('#stk-label-sale-price').fill('2500');
+ await page.locator('#stk-label-cost-price').fill('1200');
+ await page.locator('#stk-label-unit').selectOption({label:'كرتون'});
+ await page.locator('#stk-label-pack-count').fill('12');
+ await page.locator('#stk-label-size').fill('500 غرام');
+ await page.waitForFunction(()=>document.querySelector('#stk-label-preview').innerText.includes('كرتون يحتوي 12 حبة'));
+ assert.ok((await page.locator('#stk-label-preview').innerText()).includes('صابون معدل'));
+ assert.ok((await page.locator('#stk-label-preview').innerText()).includes('2,500'));
+ assert.ok((await page.locator('#stk-label-preview').innerText()).includes('500 غرام'));
+ assert.equal(await page.locator('#stk-label-cost-price').inputValue(),'1200');
+ const popupPromise=page.waitForEvent('popup');await page.locator('#stk-label-print-top').click();
+ const popup=await popupPromise;await popup.waitForLoadState();
+ assert.ok((await popup.locator('.stock-label').innerText()).includes('كرتون يحتوي 12 حبة'));await popup.close();
+ await page.locator('#stk-label-name').fill(product.name);
+ await page.locator('#stk-label-id').fill('P1');
+ await page.locator('#stk-label-unit').selectOption({label:'حبة'});
+ await page.locator('#stk-label-pack-count').fill('1');
+ await page.locator('#stk-label-size').fill('');
  for(const [width,height] of [[50,30],[58,40],[80,50]]){
   await page.locator('#stk-width').fill(String(width));await page.locator('#stk-height').fill(String(height));
   await page.waitForFunction(w=>Math.abs(document.querySelector('#stk-label-preview .stock-label').getBoundingClientRect().width-w*96/25.4)<1,width);
