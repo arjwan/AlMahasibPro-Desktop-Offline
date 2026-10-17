@@ -152,13 +152,13 @@ test('ERP: USD invoice snapshots and physical cash realize exchange differences 
 });
 
 test('ERP: existing scanner protocol pairs over trusted test TLS, queues barcodes and isolates browser sessions',async()=>{
- const f=await fixture();try{await f.login();assert.equal((await f.request('/api/v1/market/scanner/pair','POST',{})).status,400);
+ const f=await fixture();try{await f.login();const initial=await created(f,'/api/v1/market/scanner/pair',{});assert.match(initial.short_code,/^\d{6}$/);assert.equal(new URL(initial.qr_url).port,new URL(f.base()).port);assert.equal((await f.request('/api/v1/market/scanner/'+initial.token+'/revoke','POST',{})).status,200);
  const cert=readFileSync(join(root,'tests/fixtures/test-only-localhost.crt'),'utf8'),key=readFileSync(join(root,'tests/fixtures/test-only-localhost.key'),'utf8'),probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
  let config=await f.request('/api/scanner/config','POST',{hostname:'127.0.0.1',port,cert,key});assert.equal(config.status,200);assert.equal(config.data.restart_required,true);await f.stop();await f.start();await f.login();
  const settings=(await f.request('/api/scanner/config')).data;assert.equal(settings.enabled,true);assert.equal(settings.origin,'https://127.0.0.1:'+port);
  const pair=await created(f,'/api/v1/market/scanner/pair',{});assert.match(pair.qr_url,new RegExp('^https://127\\.0\\.0\\.1:'+port+'/market-scanner\\.html#[a-f0-9]{32}$'));
  function secure(path,method='GET',body){return new Promise((resolve,reject)=>{const request=https.request({hostname:'127.0.0.1',port,path,method,ca:cert,headers:{'Content-Type':'application/json'}},r=>{let text='';r.on('data',x=>text+=x);r.on('end',()=>resolve({status:r.statusCode,data:JSON.parse(text)}))});request.on('error',reject);request.end(body===undefined?undefined:JSON.stringify(body))})}
- const base='/api/v1/market/scanner/'+pair.token;assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request(base+'/status')).status,403);const event=await secure(base+'/scan','POST',{barcode:'SCANNER-LOCAL'});assert.equal(event.status,200);
+ const base='/api/v1/market/scanner/'+pair.token;assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request(base+'/status')).status,200);const event=await secure(base+'/scan','POST',{barcode:'SCANNER-LOCAL'});assert.equal(event.status,200);
  let poll=await f.request(base+'/poll');assert.equal(poll.status,200);assert.equal(poll.data.events[0].barcode,'SCANNER-LOCAL');assert.equal((await f.request(base+'/poll?since='+event.data.id)).data.events.length,0);
  const other=await fetch(f.base()+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:'admin123'})});const cookie=other.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');const foreign=await fetch(f.base()+base+'/poll',{headers:{Cookie:cookie}});assert.equal(foreign.status,410);
  const second=await created(f,'/api/v1/market/scanner/pair',{});assert.equal((await secure(base+'/status')).status,200);assert.equal((await f.request('/api/v1/market/scanner/pairs')).data.length,2);
@@ -250,4 +250,39 @@ test('ERP: invoice QR uses stored purchase/sale lines and enforces document perm
  const sale=await created(f,'/api/invoices',{lines:[{id:'QR-ITEM',qty:2}]});const saleQr=(await f.request('/api/invoices/'+sale.id+'/qr')).data;assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:saleQr.parts})).data.net,300);assert.equal((await f.request('/api/purchases/999999/qr')).status,404);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:['bad']})).status,400);
  await created(f,'/api/users',{username:'qr-buyer',password:'testpass123',role:'cashier',modules:['purchases']});await f.login('qr-buyer','testpass123');assert.equal((await f.request('/api/purchases/'+purchase.id+'/qr')).status,200);assert.equal((await f.request('/api/invoices/'+sale.id+'/qr')).status,403);assert.equal((await f.request('/api/invoice-qr/decode','POST',{parts:qr.data.parts})).status,200);
  }finally{await f.cleanup()}
+});
+
+test('Scanner: short code, expiry, retry deduplication, cashier isolation and invoice saving over HTTP',async()=>{
+ const f=await fixture();let db;try{
+  await f.login();
+  const pair=await created(f,'/api/v1/market/scanner/pair',{}),base='/api/v1/market/scanner/'+pair.token;
+  const resolve=code=>f.request('/api/v1/market/scanner/code/resolve','POST',{code});
+  const cross=await f.request('/api/v1/market/scanner/code/resolve','POST',{code:pair.short_code},{Origin:'https://foreign.example'});assert.equal(cross.status,403);
+  const resolved=await resolve(pair.short_code);assert.equal(resolved.status,200);assert.equal(resolved.data.token,pair.token);
+  assert.equal((await resolve(pair.short_code)).status,404);
+  const payload={barcode:'PHONE-TEST',request_id:'scan-request-00000001'};
+  const first=await f.request(base+'/scan','POST',payload),again=await f.request(base+'/scan','POST',payload);
+  assert.equal(first.status,200);assert.equal(again.data.id,first.data.id);
+  assert.equal((await f.request(base+'/scan','POST',{...payload,barcode:'DIFFERENT'})).status,400);
+  assert.equal((await f.request('/api/v1/market/scanner/'+'0'.repeat(32)+'/scan','POST',payload)).status,410);
+  assert.equal((await f.request(base+'/poll')).data.events.length,1);
+  const second=await created(f,'/api/v1/market/scanner/pair',{});
+  assert.equal((await f.request('/api/v1/market/scanner/'+second.token+'/poll')).data.events.length,0);
+  db=new DatabaseSync(f.dbPath);db.prepare('UPDATE scanner_pair_codes SET expires=? WHERE token=?').run(Date.now()-1,second.token);
+  assert.equal((await resolve(second.short_code)).status,404);
+  assert.equal((await f.request('/api/v1/market/scanner/'+second.token+'/status')).status,410);
+  db.prepare('UPDATE scanner_pairs SET last_seen=? WHERE token=?').run(Date.now()-20000,pair.token);
+  assert.equal((await f.request(base+'/poll')).data.phone_connected,false);
+  assert.equal((await f.request(base+'/status')).status,200);
+  assert.equal((await f.request(base+'/poll')).data.phone_connected,true);
+  const supplier=await created(f,'/api/partners',{name:'Scanner supplier',type:'supplier'});
+  await created(f,'/api/products',{id:'PHONE-PRODUCT',name:'Phone product',barcode:payload.barcode,price:250,cost:100});
+  await created(f,'/api/purchases',{partner_id:supplier.id,paid:1000,lines:[{product_id:'PHONE-PRODUCT',qty:10,cost:100}]});
+  const event=(await f.request(base+'/poll')).data.events[0];assert.equal(event.barcode,payload.barcode);
+  const sale=await created(f,'/api/invoices',{source:'pos',payment:'نقدي',lines:[{id:'PHONE-PRODUCT',qty:1}]});
+  const saved=(await f.request('/api/invoices/'+sale.id)).data;assert.equal(saved.lines[0].product_id,'PHONE-PRODUCT');
+  assert.equal((await f.request(base+'/revoke','POST',{})).status,200);assert.equal((await f.request(base+'/scan','POST',payload)).status,410);
+  for(let i=0;i<5;i++)await resolve('invalid');
+  assert.equal((await resolve('invalid')).status,429);
+ }finally{db?.close();await f.cleanup()}
 });

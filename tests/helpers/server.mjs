@@ -12,7 +12,7 @@ export async function stopChild(child){
  });
 }
 export async function startServer(dbPath,{timeout=60000,entry='server.mjs'}={}){
- const child=spawn(process.execPath,[entry],{cwd:root,windowsHide:true,env:{...process.env,ALMAHASIB_DB:dbPath,ALMAHASIB_HOST:'127.0.0.1',PORT:'0'},stdio:['ignore','pipe','pipe']});
+ const child=spawn(process.execPath,[entry],{cwd:root,windowsHide:true,env:{...process.env,ALMAHASIB_DB:dbPath,ALMAHASIB_HOST:'127.0.0.1',ALMAHASIB_SCANNER_HOST:'192.168.1.10',PORT:'0'},stdio:['ignore','pipe','pipe']});
  let output='',errors='';
  const diagnostics=()=>{let log='';try{log=readFileSync(join(dirname(dbPath),'server.log'),'utf8').slice(-6000)}catch{}return output+'\n'+errors+'\n'+log;};
  try{
