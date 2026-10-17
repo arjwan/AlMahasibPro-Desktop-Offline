@@ -200,6 +200,8 @@ CREATE TABLE IF NOT EXISTS payment_providers(
 const voucherCols=db.prepare("PRAGMA table_info(cash_vouchers)").all().map(x=>x.name);
 if(!voucherCols.includes('request_key'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN request_key TEXT');
 if(!voucherCols.includes('occurred_at'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN occurred_at TEXT');
+if(!voucherCols.includes('party_name'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN party_name TEXT');
+if(!voucherCols.includes('amount_words'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN amount_words TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_vouchers_request_key ON cash_vouchers(request_key) WHERE request_key IS NOT NULL');
 // Preserve existing payment rows while allowing cash receipts.
 if(!db.prepare("SELECT sql FROM sqlite_master WHERE name='payment_transactions'").get().sql.includes("'cash'")){
@@ -602,6 +604,8 @@ const handler=(req,res)=>{
  if(req.method==='POST'&&p==='/api/cash/vouchers'){
  const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart),requestKey=String(v.request_key||'');
  if(!/^[a-zA-Z0-9-]{16,80}$/.test(requestKey))inputError('مفتاح عملية السند غير صالح');
+ const partyName=String(v.party_name||'').trim(),amountWords=String(v.amount_words||'').trim();
+ if(!partyName||!amountWords||partyName.length>250||amountWords.length>1000)inputError('اسم الطرف والمبلغ كتابةً مطلوبان');
  const prior=db.prepare('SELECT id,entry_id FROM cash_vouchers WHERE request_key=?').get(requestKey);
  if(prior)return send(res,200,{...prior,voucher_no:'V-'+prior.id,duplicate:true});
  if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
@@ -612,7 +616,7 @@ const handler=(req,res)=>{
  if(v.partner_id){const party=db.prepare('SELECT * FROM partners WHERE id=?').get(String(v.partner_id));if(!party)inputError('الطرف غير موجود');if(!['104','201'].includes(counterpart))inputError('تسديد الطرف يحتاج حساب الذمم');if(counterpart==='104'&&!['customer','both'].includes(party.type))inputError('اختر عميلاً');if(counterpart==='201'&&!['supplier','both'].includes(party.type))inputError('اختر مورداً');}
  const entry=postJournal(description,'V-'+crypto.randomUUID(),[[cash,incoming?amount:0,incoming?0:amount],[counterpart,incoming?0:amount,incoming?amount:0]]);
  const id=Number(db.prepare('INSERT INTO cash_vouchers(kind,cash_account,counterpart,amount,description,entry_id,date) VALUES(?,?,?,?,?,?,?)').run(v.kind,cash,counterpart,amount,description,entry,new Date().toISOString().slice(0,10)).lastInsertRowid);
- db.prepare('UPDATE cash_vouchers SET partner_id=?,request_key=?,occurred_at=? WHERE id=?').run(v.partner_id||null,requestKey,new Date().toISOString(),id);erp.audit('voucher',id,{entry});
+ db.prepare('UPDATE cash_vouchers SET partner_id=?,request_key=?,occurred_at=?,party_name=?,amount_words=? WHERE id=?').run(v.partner_id||null,requestKey,new Date().toISOString(),partyName,amountWords,id);erp.audit('voucher',id,{entry});
  return {id,entry_id:entry,voucher_no:'V-'+id};
  });return send(res,201,result);
  }
