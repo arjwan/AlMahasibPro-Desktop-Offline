@@ -602,10 +602,10 @@ const handler=(req,res)=>{
  }
  if(req.method==='GET'&&p==='/api/cash/vouchers')return send(res,200,db.prepare('SELECT v.*,a.name AS cash_name,b.name AS counterpart_name FROM cash_vouchers v JOIN accounts a ON a.id=v.cash_account JOIN accounts b ON b.id=v.counterpart ORDER BY v.id DESC').all());
  if(req.method==='POST'&&p==='/api/cash/vouchers'){
- const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart),requestKey=String(v.request_key||'');
+ const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart),requestKey=String(v.request_key||crypto.randomUUID());
  if(!/^[a-zA-Z0-9-]{16,80}$/.test(requestKey))inputError('مفتاح عملية السند غير صالح');
  const partyName=String(v.party_name||'').trim(),amountWords=String(v.amount_words||'').trim();
- if(!partyName||!amountWords||partyName.length>250||amountWords.length>1000)inputError('اسم الطرف والمبلغ كتابةً مطلوبان');
+ if(partyName.length>250||amountWords.length>1000)inputError('بيانات اسم الطرف أو المبلغ كتابةً طويلة جداً');
  const prior=db.prepare('SELECT id,entry_id,kind,cash_account,counterpart,amount,party_name,amount_words,description FROM cash_vouchers WHERE request_key=?').get(requestKey);
  if(prior){if(prior.kind!==v.kind||prior.cash_account!==cash||prior.counterpart!==counterpart||prior.amount!==amount||prior.party_name!==partyName||prior.amount_words!==amountWords||String(prior.description||'')!==String(v.description||'سند نقدي'))inputError('معرف العملية مستخدم لسند مختلف');return send(res,200,{id:prior.id,entry_id:prior.entry_id,voucher_no:'V-'+prior.id,duplicate:true});}
  if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
