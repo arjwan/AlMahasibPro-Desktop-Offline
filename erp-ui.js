@@ -10,7 +10,7 @@ async function api(p,method='GET',body){
 const table=(cols,rows)=>'<div style="overflow:auto"><table class="workspace-table"><thead><tr>'+cols.map(x=>'<th>'+e(x)+'</th>').join('')+'</tr></thead><tbody>'+(rows.length?rows.map(r=>'<tr>'+r.map(x=>'<td>'+x+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+cols.length+'">لا توجد بيانات</td></tr>')+'</tbody></table></div>';
 const panel=(title,body)=>'<div class="panel"><h3>'+e(title)+'</h3>'+body+'</div>';
 const options=(rows,label=x=>x.name)=>rows.map(x=>'<option value="'+e(x.id)+'">'+e(label(x))+'</option>').join('');
-const field=(id,label,type='text',value='')=>'<label>'+e(label)+'<input class="input wide" id="erp-'+id+'" type="'+type+'" value="'+e(value)+'" '+(type==='number'?'step="1"':'')+'></label>';
+const field=(id,label,type='text',value='')=>'<label>'+e(label)+'<input class="input wide" id="erp-'+id+'" type="'+type+'" value="'+e(value)+'" '+(type==='number'?'step="any"':'')+'></label>';
 const select=(id,label,opts)=>'<label>'+e(label)+'<select class="input" id="erp-'+id+'">'+opts+'</select></label>';
 const button=(id,label)=>'<button type="button" class="btn" id="erp-'+id+'">'+e(label)+'</button>';
 const form=(id,title,fields,label)=>panel(title,'<form id="erp-form-'+id+'"><div class="workspace-form">'+fields+'</div><button class="btn" type="submit">'+e(label||'حفظ')+'</button><p class="sub erp-result"></p></form>');
