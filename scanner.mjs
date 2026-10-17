@@ -10,7 +10,9 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
  CREATE TABLE IF NOT EXISTS scanner_events(id INTEGER PRIMARY KEY, token TEXT NOT NULL REFERENCES scanner_pairs(token), barcode TEXT NOT NULL, created_at TEXT NOT NULL);`);
  for(const [table,name,type] of [['scanner_pairs','last_seen','INTEGER'],['scanner_events','request_id','TEXT']])if(!db.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name===name))db.exec('ALTER TABLE '+table+' ADD COLUMN '+name+' '+type);
  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS scanner_event_request ON scanner_events(token,request_id) WHERE request_id IS NOT NULL');
+ db.exec('CREATE TABLE IF NOT EXISTS scanner_pair_codes(code TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE REFERENCES scanner_pairs(token), expires INTEGER NOT NULL)');
  let tlsServer=null,tlsError=null,config=null,listener=null;
+ const codeAttempts=new Map();
  const dir=path.join(path.dirname(dbPath),'tls'),configPath=path.join(dir,'config.json');
  const owner=req=>crypto.createHash('sha256').update((req.deviceId||'')+':'+req.user.id).digest('hex');
  function validate(v){try{
@@ -25,6 +27,19 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
  function metadata(){return {enabled:!!tlsServer?.listening,origin:tlsServer?.listening&&config?'https://'+config.hostname+':'+config.port:null,error:tlsError,certificate_required:!config}}
  function startTLS(handler){listener=handler;if(!fs.existsSync(configPath))return;try{const settings=JSON.parse(fs.readFileSync(configPath,'utf8'));config=validate({...settings,cert:fs.readFileSync(path.join(dir,'server.crt'),'utf8'),key:fs.readFileSync(path.join(dir,'server.key'),'utf8')});tlsServer=https.createServer({key:config.key,cert:config.cert,minVersion:'TLSv1.2'},handler);tlsServer.on('error',e=>{tlsError=e.message});tlsServer.listen(config.port,process.env.ALMAHASIB_TLS_HOST||'0.0.0.0')}catch(e){tlsError=e.message}}
  function publicHandle(req,res,p,body){
+  if(p==='/api/v1/market/scanner/code/resolve'){
+   if(req.method!=='POST'){send(res,405,{error:'الطريقة غير مدعومة'});return true}
+   const ip=req.socket.remoteAddress||'unknown',now=Date.now();
+   for(const [key,entry] of codeAttempts)if(now-entry.since>600000)codeAttempts.delete(key);
+   const entry=codeAttempts.get(ip)||{since:now,count:0};entry.count++;codeAttempts.set(ip,entry);
+   if(entry.count>5){send(res,429,{error:'محاولات كثيرة؛ حاول لاحقاً'});return true}
+   const code=String(readJSON(body).code||'').trim();
+   if(!/^\d{6}$/.test(code)){send(res,400,{error:'رمز غير صالح'});return true}
+   const found=db.prepare('SELECT c.token FROM scanner_pair_codes c JOIN scanner_pairs p ON p.token=c.token WHERE c.code=? AND c.expires>? AND p.active=1 AND p.expires>?').get(code,now,now);
+   if(!found){send(res,404,{error:'رمز غير صالح أو منتهي'});return true}
+   db.prepare('DELETE FROM scanner_pair_codes WHERE code=?').run(code);
+   send(res,200,{ok:true,token:found.token});return true;
+  }
   const match=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(status|scan)$/);if(!match)return false;
   if(req.headers.origin&&req.headers.origin!==(req.socket.encrypted?'https://':'http://')+req.headers.host){send(res,403,{error:'مصدر الطلب غير مسموح'});return true}
   const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND active=1 AND expires>?').get(match[1],Date.now());if(!pair){send(res,410,{error:'انتهى الربط'});return true}
@@ -54,11 +69,14 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
    if(db.prepare('SELECT COUNT(*) AS n FROM scanner_pairs WHERE owner=? AND active=1').get(owner(req)).n>=20)inputError('افصل جهازاً من إعدادات قارئ الهاتف قبل إضافة جهاز آخر');
    const token=crypto.randomBytes(16).toString('hex'),expires=8640000000000000;
    db.prepare('INSERT INTO scanner_pairs(token,owner,expires) VALUES(?,?,?)').run(token,owner(req),expires);
-   send(res,201,{token,expires,qr_url:pairingUrl(req,token)});return true;
+   db.prepare('DELETE FROM scanner_pair_codes WHERE expires<=?').run(Date.now());
+   let shortCode;do{shortCode=String(crypto.randomInt(1000000)).padStart(6,'0')}while(db.prepare('SELECT 1 FROM scanner_pair_codes WHERE code=?').get(shortCode));
+   db.prepare('INSERT INTO scanner_pair_codes(code,token,expires) VALUES(?,?,?)').run(shortCode,token,Date.now()+300000);
+   send(res,201,{token,expires,short_code:shortCode,code_expires:Date.now()+300000,qr_url:pairingUrl(req,token),pairing_origin:metadata().origin||localOrigin(req)});return true;
   }
   const poll=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(poll|revoke)$/);
   if(poll){db.prepare('UPDATE scanner_pairs SET owner=?,expires=? WHERE token=? AND owner=? AND active=1').run(owner(req),8640000000000000,poll[1],crypto.createHash('sha256').update(req.sessionId||'').digest('hex'));const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND owner=? AND active=1 AND expires>?').get(poll[1],owner(req),Date.now());if(!pair){send(res,410,{error:'الربط غير صالح لهذه الجلسة'});return true}
-   if(post&&poll[2]==='revoke'){db.prepare('UPDATE scanner_pairs SET active=0 WHERE token=?').run(pair.token);send(res,200,{ok:true});return true}
+   if(post&&poll[2]==='revoke'){db.prepare('DELETE FROM scanner_pair_codes WHERE token=?').run(pair.token);db.prepare('UPDATE scanner_pairs SET active=0 WHERE token=?').run(pair.token);send(res,200,{ok:true});return true}
    if(get&&poll[2]==='poll'){const since=Number(new URL(req.url,'http://localhost').searchParams.get('since')||0);if(!Number.isSafeInteger(since)||since<0)inputError('مؤشر المسح غير صحيح');send(res,200,{phone_connected:!!pair.last_seen&&Date.now()-pair.last_seen<15000,last_seen:pair.last_seen||null,events:db.prepare('SELECT id,barcode,created_at FROM scanner_events WHERE token=? AND id>? ORDER BY id LIMIT 100').all(pair.token,since)});return true}
   }
   return false;
