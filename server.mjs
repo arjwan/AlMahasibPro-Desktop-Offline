@@ -606,8 +606,8 @@ const handler=(req,res)=>{
  if(!/^[a-zA-Z0-9-]{16,80}$/.test(requestKey))inputError('مفتاح عملية السند غير صالح');
  const partyName=String(v.party_name||'').trim(),amountWords=String(v.amount_words||'').trim();
  if(!partyName||!amountWords||partyName.length>250||amountWords.length>1000)inputError('اسم الطرف والمبلغ كتابةً مطلوبان');
- const prior=db.prepare('SELECT id,entry_id FROM cash_vouchers WHERE request_key=?').get(requestKey);
- if(prior)return send(res,200,{...prior,voucher_no:'V-'+prior.id,duplicate:true});
+ const prior=db.prepare('SELECT id,entry_id,kind,cash_account,counterpart,amount,party_name,amount_words,description FROM cash_vouchers WHERE request_key=?').get(requestKey);
+ if(prior){if(prior.kind!==v.kind||prior.cash_account!==cash||prior.counterpart!==counterpart||prior.amount!==amount||prior.party_name!==partyName||prior.amount_words!==amountWords||String(prior.description||'')!==String(v.description||'سند نقدي'))inputError('معرف العملية مستخدم لسند مختلف');return send(res,200,{id:prior.id,entry_id:prior.entry_id,voucher_no:'V-'+prior.id,duplicate:true});}
  if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
  const result=transaction(()=>{
  if(['107','108'].includes(counterpart))inputError('استخدم سند الدولار لهذا الحساب');
