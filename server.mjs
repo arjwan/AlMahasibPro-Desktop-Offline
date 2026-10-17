@@ -635,7 +635,7 @@ const handler=(req,res)=>{
  const sales=db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN shipping_version>0 THEN (SELECT SUM(net) FROM shipments s WHERE s.invoice_id=i.id) ELSE net END),0) AS sales FROM sale_invoices i WHERE (status='paid' AND shipping_version=0) OR shipping_version>0").get();
  const day=new Date().toISOString().slice(0,10);const today=db.prepare("SELECT (SELECT COALESCE(SUM(net),0) FROM sale_invoices WHERE status='paid' AND shipping_version=0 AND date=?)+(SELECT COALESCE(SUM(net),0) FROM shipments WHERE substr(date,1,10)=?) AS total").get(day,day);
  const stock=db.prepare('SELECT COUNT(*) AS products,COALESCE(SUM(stock),0) AS units FROM product_warehouse').get();
- return send(res,200,{...sales,todaySales:today.total,products:all().length,stockUnits:stock.units,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
+ return send(res,200,{...sales,todaySales:today.total,cashBalance:db.prepare("SELECT COALESCE(SUM(debit-credit),0) AS amount FROM journal_items WHERE account_id='101'").get().amount,products:all().length,stockUnits:stock.units,heldPOS:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0 AND source='pos'").get().n,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
  }
  return send(res,404,{error:'المسار غير موجود'});
  }catch(e){send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة':e.message})}

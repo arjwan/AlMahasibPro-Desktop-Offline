@@ -39,12 +39,16 @@ jobs:
       - run: npm run test:scanner
       - run: npm run demo:create
       - run: npm run test:demo
+      - run: npm run test:interface-review
       - run: npm run test:pos-layout
       - name: Build Windows installer after all checks
+        if: github.event_name == 'workflow_dispatch' && inputs.build
         run: npx electron-builder --win nsis --x64 --publish never
       - name: Install, launch and upgrade the built Windows package
+        if: github.event_name == 'workflow_dispatch' && inputs.build
         run: node tests/windows-installer.smoke.cjs
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.build
         with:
           name: AlMahasibPro-Offline-Windows
           path: dist/*.exe

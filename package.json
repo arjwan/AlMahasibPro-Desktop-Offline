@@ -15,7 +15,8 @@
     "test:demo": "node tests/demo.smoke.mjs",
     "test:scanner": "node tests/scanner-print.smoke.mjs",
     "test:pos-layout": "node tests/pos-layout.smoke.mjs",
-    "test:license-ui": "node tests/license-ui.smoke.mjs"
+    "test:license-ui": "node tests/license-ui.smoke.mjs",
+    "test:interface-review": "node tests/interface-review.smoke.mjs"
   },
   "engines": {
     "node": ">=22.13.0"
