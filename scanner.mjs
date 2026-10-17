@@ -45,14 +45,14 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
    fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'server.crt'),checked.cert,{mode:0o600});fs.writeFileSync(path.join(dir,'server.key'),checked.key,{mode:0o600});fs.writeFileSync(configPath,JSON.stringify({hostname:checked.hostname,port:checked.port}),{mode:0o600});audit('scanner-tls-config','local',{hostname:checked.hostname,port:checked.port});send(res,200,{ok:true,restart_required:true});return true;
   }
   if(get&&p==='/api/v1/market/scanner/pairs'){
-   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>({...pair,qr_url:metadata().origin+'/market-scanner.html#'+pair.token})));return true;
+   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>({...pair,qr_url:metadata().origin?metadata().origin+'/market-scanner.html#'+pair.token:null})));return true;
   }
   if(post&&p==='/api/v1/market/scanner/pair'){
-   if(!tlsServer?.listening||tlsError)inputError('فعّل HTTPS موثوقاً من الإعدادات أولاً');
+   // Pairing code can be prepared immediately; HTTPS is still required to use the phone camera and transmit scans.
    if(db.prepare('SELECT COUNT(*) AS n FROM scanner_pairs WHERE owner=? AND active=1').get(owner(req)).n>=20)inputError('افصل جهازاً من إعدادات قارئ الهاتف قبل إضافة جهاز آخر');
    const token=crypto.randomBytes(16).toString('hex'),expires=8640000000000000;
    db.prepare('INSERT INTO scanner_pairs(token,owner,expires) VALUES(?,?,?)').run(token,owner(req),expires);
-   send(res,201,{token,expires,qr_url:metadata().origin+'/market-scanner.html#'+token});return true;
+   send(res,201,{token,expires,qr_url:metadata().origin?metadata().origin+'/market-scanner.html#'+token:null});return true;
   }
   const poll=p.match(/^\/api\/v1\/market\/scanner\/([a-f0-9]{32})\/(poll|revoke)$/);
   if(poll){db.prepare('UPDATE scanner_pairs SET owner=?,expires=? WHERE token=? AND owner=? AND active=1').run(owner(req),8640000000000000,poll[1],crypto.createHash('sha256').update(req.sessionId||'').digest('hex'));const pair=db.prepare('SELECT * FROM scanner_pairs WHERE token=? AND owner=? AND active=1 AND expires>?').get(poll[1],owner(req),Date.now());if(!pair){send(res,410,{error:'الربط غير صالح لهذه الجلسة'});return true}
