@@ -85,7 +85,28 @@ const printChoice=$('posPrintEnabled');
 try{printChoice.checked=localStorage.getItem('alma-pos-print-enabled')!=='false'}catch{}
 function updatePrintChoice(){$('print').textContent=printChoice.checked?'🖨 حفظ وطباعة الوصل الحراري':'✓ حفظ الفاتورة دون طباعة';try{localStorage.setItem('alma-pos-print-enabled',String(printChoice.checked))}catch{}}
 printChoice.onchange=updatePrintChoice;updatePrintChoice();
-$('posReprint').onclick=()=>{if($('receipt').children.length)try{window.print()}catch(error){notice('تعذر طباعة الوصل: '+error.message)}};
+function thermalReceiptHTML({invoice,lines,discount,total,settings={},cashier='—'}){
+ const stamp=new Date(invoice.created_at||Date.now()),valid=!Number.isNaN(stamp.getTime()),options={timeZone:'Asia/Baghdad'};
+ const date=valid?stamp.toLocaleDateString('ar-IQ',options):String(invoice.date||'—');
+ const time=valid?stamp.toLocaleTimeString('ar-IQ',{...options,hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
+ const header='<header class="receipt-head"><h2>'+esc(settings.company_name||'المحاسب برو')+'</h2>'+(settings.company_address?'<p>'+esc(settings.company_address)+'</p>':'')+(settings.company_phone?'<p dir="ltr">'+esc(settings.company_phone)+'</p>':'')+'<strong>وصل مبيعات</strong></header>';
+ const meta='<div class="receipt-meta"><div><span>رقم الفاتورة</span><b dir="ltr">'+esc(invoice.invoice_no)+'</b></div><div><span>الكاشير</span><b>'+esc(cashier)+'</b></div><div><span>التاريخ</span><b>'+esc(date)+'</b></div><div><span>الوقت</span><b>'+esc(time)+'</b></div></div>';
+ const table='<table class="receipt-items"><thead><tr><th>المادة</th><th>الكمية</th><th>الإجمالي</th></tr></thead><tbody>'+lines.map(p=>'<tr><td>'+esc(p.name)+'<small>سعر الوحدة: '+money(p.price)+'</small></td><td>'+esc(p.qty)+'</td><td>'+money(p.price*p.qty)+'</td></tr>').join('')+'</tbody></table>';
+ return header+meta+table+'<div class="receipt-totals"><div><span>المجموع</span><b>'+money(total)+'</b></div><div><span>الخصم</span><b>'+money(discount)+'</b></div><div class="receipt-net"><span>الصافي</span><b>'+money(total-discount)+'</b></div></div><footer class="receipt-thanks"><strong>شكراً لتسوقكم معنا</strong><p>'+esc(settings.receipt_footer||'نسعد بخدمتكم ونتطلع لزيارتكم مجدداً')+'</p></footer>';
+}
+function printThermalReceipt(){
+ const receipt=$('receipt');if(!receipt.children.length)return;
+ let config={};try{config=JSON.parse(localStorage.getItem('alma-local-printer-config-v1')||'{}')}catch{}
+ const width=config.width==='58'?58:80,content=width-4;
+ receipt.style.width=content+'mm';receipt.style.setProperty('--receipt-qr',width===58?'46mm':'50mm');
+ let sheet=$('thermal-page-style');if(!sheet){sheet=document.createElement('style');sheet.id='thermal-page-style';document.head.append(sheet)}
+ receipt.classList.add('receipt-measure');
+ const height=Math.max(50,Math.ceil(receipt.getBoundingClientRect().height*25.4/96+6));
+ receipt.classList.remove('receipt-measure');
+ sheet.textContent='@page{size:'+width+'mm '+height+'mm;margin:2mm}@media print{html,body{width:'+width+'mm!important;margin:0!important;padding:0!important;height:auto!important;overflow:visible!important;background:white!important}.receipt{width:'+content+'mm!important;margin:0!important}}';
+ window.print();
+}
+$('posReprint').onclick=()=>{if($('receipt').children.length)try{printThermalReceipt()}catch(error){notice('تعذر طباعة الوصل: '+error.message)}};
 $('print').onclick=async()=>{
  if(!cart.length||$('print').disabled||!percentInput.reportValidity())return;
  $('print').disabled=true;$('hold').disabled=true;
@@ -106,8 +127,10 @@ $('print').onclick=async()=>{
  const response=await fetch('/api/invoices',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':pending.key},body:pending.payload});
  const result=await response.json();if(!response.ok)throw Error(result.error||'تعذر الحفظ');
  const lines=structuredClone(cart),discount=Number($('discount').value||0),total=lines.reduce((s,p)=>s+p.price*p.qty,0);
- $('receipt').innerHTML='<div class="center"><h3>المحاسب برو</h3><b>وصل مبيعات</b></div><hr><div>الفاتورة: '+esc(result.invoice_no)+'</div><div>التاريخ: '+new Date().toLocaleString('ar-IQ')+'</div><hr><table>'+lines.map(p=>'<tr><td>'+esc(p.name)+' × '+p.qty+'</td><td>'+money(p.price*p.qty)+'</td></tr>').join('')+'</table><hr><div>الخصم: '+money(discount)+'</div><h3>الصافي: '+money(total-discount)+'</h3>';
- let qrWarning='';try{$('receipt').insertAdjacentHTML('beforeend',await window.invoiceQrHTML('invoices',result.id))}catch(error){qrWarning='؛ تعذر تجهيز QR: '+error.message}sessionStorage.removeItem(storage);fresh();$('posPaid').value='';$('posCard').value='0';$('posReference').value='';await refreshLive();$('posReprint').disabled=false;notice('تم حفظ الفاتورة '+result.invoice_no+(printChoice.checked?' في قاعدة البيانات':' دون طباعة')+qrWarning);if(printChoice.checked)try{window.print()}catch(error){notice('تم حفظ الفاتورة '+result.invoice_no+'؛ تعذر طباعة الوصل: '+error.message)}
+ let savedInvoice={...result,created_at:new Date().toISOString()},receiptSettings={};try{savedInvoice=await api('/api/invoices/'+result.id)}catch{}try{receiptSettings=await api('/api/settings')}catch{}
+ $('receipt').innerHTML=thermalReceiptHTML({invoice:savedInvoice,lines,discount,total,settings:receiptSettings,cashier:$('cashier').value||window.erpUser?.full_name||window.erpUser?.username||'—'});
+
+ let qrWarning='';try{$('receipt').insertAdjacentHTML('beforeend',await window.invoiceQrHTML('invoices',result.id))}catch(error){qrWarning='؛ تعذر تجهيز QR: '+error.message}sessionStorage.removeItem(storage);fresh();$('posPaid').value='';$('posCard').value='0';$('posReference').value='';await refreshLive();$('posReprint').disabled=false;notice('تم حفظ الفاتورة '+result.invoice_no+(printChoice.checked?' في قاعدة البيانات':' دون طباعة')+qrWarning);if(printChoice.checked)try{printThermalReceipt()}catch(error){notice('تم حفظ الفاتورة '+result.invoice_no+'؛ تعذر طباعة الوصل: '+error.message)}
  }catch(e){notice('تعذر حفظ الفاتورة: '+e.message)}finally{$('print').disabled=false;$('hold').disabled=false}
 };
 $('posExpenseSave').onclick=async()=>{
@@ -356,4 +379,16 @@ document.querySelectorAll('#tiles button').forEach(n=>n.onclick=()=>window.go(n.
 @media(max-width:650px){#posHeldRail{width:76px;min-width:76px}}
 
 .ws-collapsible>summary{cursor:pointer;font-weight:bold;font-size:20px;color:#12355a;padding:12px 4px}.ws-collapsible>summary::marker{color:#3975c4}.ws-collapsible[open]>summary{margin-bottom:12px}
+</style>
+
+<style>
+/* Thermal receipt: isolated from the cashier layout and sized from printer settings. */
+.receipt{direction:rtl;font:12px Tahoma,Arial,sans-serif;line-height:1.5;color:#000;background:#fff;box-sizing:border-box}
+.receipt *{box-sizing:border-box}.receipt h2{font-size:18px;margin:0 0 2mm}.receipt p{margin:1mm 0}.receipt-head{text-align:center;border-bottom:1px dashed #000;padding-bottom:2mm}
+.receipt-meta{padding:2mm 0;border-bottom:1px dashed #000}.receipt-meta>div,.receipt-totals>div{display:flex;justify-content:space-between;gap:2mm}.receipt-meta b{font-weight:600;overflow-wrap:anywhere;text-align:left}
+.receipt .receipt-items{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;margin:2mm 0}.receipt-items th{border-bottom:1px solid #000;text-align:right;padding:1mm 0}.receipt-items td{vertical-align:top;padding:1.5mm 0;border-bottom:1px dotted #aaa;overflow-wrap:anywhere}.receipt-items th:first-child{width:52%}.receipt-items th:nth-child(2){width:15%;text-align:center}.receipt-items td:nth-child(2){text-align:center}.receipt-items th:last-child,.receipt-items td:last-child{text-align:left}.receipt-items small{display:block;font-size:10px;margin-top:.5mm}
+.receipt-totals{border-top:1px dashed #000;padding-top:2mm}.receipt-net{font-size:16px;font-weight:bold;border-top:1px solid #000;margin-top:1mm;padding-top:1mm}.receipt-thanks{text-align:center;border-top:1px dashed #000;margin-top:2mm;padding-top:2mm;break-inside:avoid}.receipt-thanks p{font-size:11px}
+.receipt .invoice-qr{margin-top:2mm;break-inside:avoid}.receipt .invoice-qr svg{width:var(--receipt-qr,50mm)!important;max-width:100%!important;height:auto!important}.receipt .invoice-qr>div{margin:2mm auto!important}
+@media screen{.receipt.receipt-measure{display:block!important;position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none}}
+@media print{.receipt{display:block!important;position:static!important}.receipt tr{break-inside:avoid}.receipt h2{font-size:18px}body>*:not(.receipt){display:none!important}}
 </style>
