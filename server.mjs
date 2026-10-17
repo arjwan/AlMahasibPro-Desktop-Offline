@@ -652,7 +652,7 @@ const handler=(req,res)=>{
  return send(res,200,{...sales,todaySales:today.total,cashBalance:db.prepare("SELECT COALESCE(SUM(debit-credit),0) AS amount FROM journal_items WHERE account_id='101'").get().amount,products:all().length,stockUnits:stock.units,heldPOS:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0 AND source='pos'").get().n,held:db.prepare("SELECT COUNT(*) AS n FROM sale_invoices WHERE status='held' AND cancelled=0").get().n});
  }
  return send(res,404,{error:'المسار غير موجود'});
- }catch(e){send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة':e.message})}
+ }catch(e){if(/constraint|unique|foreign key/i.test(e.message)&&!e.status){console.error('[sqlite-constraint]',{route:req.method+' '+req.url,code:e.code||'SQLITE_CONSTRAINT',message:e.message});}send(res,e.status||(/constraint|unique|foreign key/i.test(e.message)?400:500),{error:e.status?e.message:/constraint|unique|foreign key/i.test(e.message)?'تعارض في البيانات المدخلة؛ راجع سجل البرنامج لتحديد القيد المتعارض':e.message})}
  });
 };
 const server=http.createServer(handler);scanner.startTLS(handler);
