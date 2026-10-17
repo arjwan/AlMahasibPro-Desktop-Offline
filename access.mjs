@@ -8,7 +8,7 @@ export function createAccess({db,send,readJSON,inputError,audit,licensing}){
  db.exec('CREATE TABLE IF NOT EXISTS user_grants(user_id TEXT NOT NULL REFERENCES users(id),module TEXT NOT NULL,PRIMARY KEY(user_id,module))');
  if(!db.prepare('PRAGMA table_info(registered_devices)').all().some(x=>x.name==='kind'))db.exec("ALTER TABLE registered_devices ADD COLUMN kind TEXT NOT NULL DEFAULT 'cashier'");
  const sessions=new Map(),failures=new Map();
- const modules=['sales','purchases','stock','accounts','banks','partners','reports','branches','agents','settings'];
+ const modules=['discount_over_10','sales','purchases','stock','accounts','banks','partners','reports','branches','agents','settings'];
  function cookieValue(req,name){return req.headers.cookie?.split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='))?.slice(name.length+1)}
  function cookie(req){return cookieValue(req,'alma_session')}
  function userFor(req){const token=cookie(req),session=sessions.get(token);if(!session||(session.local&&!isLocal(req))||session.expires<Date.now()||!db.prepare('SELECT id FROM registered_devices WHERE id=? AND revoked=0').get(session?.device||'')){sessions.delete(token);return null}return db.prepare('SELECT id,username,full_name,role FROM users WHERE id=?').get(session.id)||null}
