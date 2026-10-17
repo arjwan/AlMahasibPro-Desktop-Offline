@@ -256,6 +256,9 @@ function organizeWorkspaceSections(page){
  if(!pages[page]||page==='home'||page==='pos')return;
  const body=document.getElementById('ws-body');if(!body)return;
  const panels=Array.from(body.children).filter(el=>el.classList?.contains('panel'));
+ // Forms are open, while large registers and supplementary panels stay folded.
+ const primaryKeywords=/إضافة|فاتورة .*جديدة|فاتورة مبيعات|سند قبض|سند صرف|قيد يومية|إعدادات|إجراء|مرتجع فاتورة|تسجيل|تعديل/;
+ const registerKeywords=/سجل|آخر|الفواتير|المرتجعات|القيود|الحركات|الأرصدة|ميزان|دليل|تقارير|الحسابات|المواد والأرصدة/;
  let first=true;
  for(const panel of panels){
   if(panel.tagName==='DETAILS'){panel.classList.add('ws-modern-section');continue;}
@@ -266,11 +269,11 @@ function organizeWorkspaceSections(page){
   const details=document.createElement('details');
   details.className=panel.className+' ws-modern-section';
   details.dataset.wsOrganized='true';
-  details.open=first;first=false;
+  details.open=first && (primaryKeywords.test(title)||!registerKeywords.test(title));first=false;
   const summary=document.createElement('summary');
   summary.className='ws-section-summary';
   const titleSpan=document.createElement('span');titleSpan.className='ws-section-title';titleSpan.textContent=title;
-  const count=panel.querySelectorAll('table tbody tr').length;
+  const count=panel.querySelectorAll('table tbody tr').length||panel.querySelectorAll('table tr').length-Number(!!panel.querySelector('table thead'));
   const info=document.createElement('span');info.className='ws-section-meta';
   if(count&&/سجل|فواتير|حركات|القيود|أرصدة|مواد|المرتجعات|السندات|الحسابات|العملاء|الموردون/.test(title))info.textContent=count.toLocaleString('ar-IQ')+' سجل';
   else info.textContent='اضغط للعرض أو الإخفاء';
