@@ -196,6 +196,13 @@ CREATE TABLE IF NOT EXISTS payment_providers(
   settings TEXT,
   active INTEGER DEFAULT 1
 );`);
+// Add immutable voucher reference, event time and retry key without renumbering old records.
+const voucherCols=db.prepare("PRAGMA table_info(cash_vouchers)").all().map(x=>x.name);
+if(!voucherCols.includes('request_key'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN request_key TEXT');
+if(!voucherCols.includes('occurred_at'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN occurred_at TEXT');
+if(!voucherCols.includes('party_name'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN party_name TEXT');
+if(!voucherCols.includes('amount_words'))db.exec('ALTER TABLE cash_vouchers ADD COLUMN amount_words TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_vouchers_request_key ON cash_vouchers(request_key) WHERE request_key IS NOT NULL');
 // Preserve existing payment rows while allowing cash receipts.
 if(!db.prepare("SELECT sql FROM sqlite_master WHERE name='payment_transactions'").get().sql.includes("'cash'")){
  db.exec("BEGIN IMMEDIATE; ALTER TABLE payment_transactions RENAME TO payment_transactions_legacy");
@@ -595,7 +602,12 @@ const handler=(req,res)=>{
  }
  if(req.method==='GET'&&p==='/api/cash/vouchers')return send(res,200,db.prepare('SELECT v.*,a.name AS cash_name,b.name AS counterpart_name FROM cash_vouchers v JOIN accounts a ON a.id=v.cash_account JOIN accounts b ON b.id=v.counterpart ORDER BY v.id DESC').all());
  if(req.method==='POST'&&p==='/api/cash/vouchers'){
- const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart);
+ const v=readJSON(body),amount=Number(v.amount),cash=String(v.cash_account),counterpart=String(v.counterpart),requestKey=String(v.request_key||crypto.randomUUID());
+ if(!/^[a-zA-Z0-9-]{16,80}$/.test(requestKey))inputError('مفتاح عملية السند غير صالح');
+ const partyName=String(v.party_name||'').trim(),amountWords=String(v.amount_words||'').trim();
+ if(partyName.length>250||amountWords.length>1000)inputError('بيانات اسم الطرف أو المبلغ كتابةً طويلة جداً');
+ const prior=db.prepare('SELECT id,entry_id,kind,cash_account,counterpart,amount,party_name,amount_words,description FROM cash_vouchers WHERE request_key=?').get(requestKey);
+ if(prior){if(prior.kind!==v.kind||prior.cash_account!==cash||prior.counterpart!==counterpart||prior.amount!==amount||prior.party_name!==partyName||prior.amount_words!==amountWords||String(prior.description||'')!==String(v.description||'سند نقدي'))inputError('معرف العملية مستخدم لسند مختلف');return send(res,200,{id:prior.id,entry_id:prior.entry_id,voucher_no:'V-'+prior.id,duplicate:true});}
  if(!['receipt','payment'].includes(v.kind)||!['101','103'].includes(cash)||cash===counterpart||!Number.isSafeInteger(amount)||amount<=0)inputError('بيانات السند غير صحيحة');
  const result=transaction(()=>{
  if(['107','108'].includes(counterpart))inputError('استخدم سند الدولار لهذا الحساب');
@@ -604,8 +616,8 @@ const handler=(req,res)=>{
  if(v.partner_id){const party=db.prepare('SELECT * FROM partners WHERE id=?').get(String(v.partner_id));if(!party)inputError('الطرف غير موجود');if(!['104','201'].includes(counterpart))inputError('تسديد الطرف يحتاج حساب الذمم');if(counterpart==='104'&&!['customer','both'].includes(party.type))inputError('اختر عميلاً');if(counterpart==='201'&&!['supplier','both'].includes(party.type))inputError('اختر مورداً');}
  const entry=postJournal(description,'V-'+crypto.randomUUID(),[[cash,incoming?amount:0,incoming?0:amount],[counterpart,incoming?0:amount,incoming?amount:0]]);
  const id=Number(db.prepare('INSERT INTO cash_vouchers(kind,cash_account,counterpart,amount,description,entry_id,date) VALUES(?,?,?,?,?,?,?)').run(v.kind,cash,counterpart,amount,description,entry,new Date().toISOString().slice(0,10)).lastInsertRowid);
- db.prepare('UPDATE cash_vouchers SET partner_id=? WHERE id=?').run(v.partner_id||null,id);erp.audit('voucher',id,{entry});
- return {id,entry_id:entry};
+ db.prepare('UPDATE cash_vouchers SET partner_id=?,request_key=?,occurred_at=?,party_name=?,amount_words=? WHERE id=?').run(v.partner_id||null,requestKey,new Date().toISOString(),partyName,amountWords,id);erp.audit('voucher',id,{entry});
+ return {id,entry_id:entry,voucher_no:'V-'+id};
  });return send(res,201,result);
  }
  if(req.method==='GET'&&p==='/api/ledger'){
