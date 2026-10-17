@@ -1,9 +1,10 @@
-export function currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON}){
+export function currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON,voucherDetails}){
  const column=(table,name,type)=>{if(!db.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name===name))db.exec('ALTER TABLE '+table+' ADD COLUMN '+name+' '+type)};
  for(const table of ['sale_invoices','purchase_invoices']){column(table,'currency',"TEXT NOT NULL DEFAULT 'IQD'");column(table,'exchange_rate',"TEXT NOT NULL DEFAULT '1'");column(table,'foreign_snapshot','TEXT')}
  db.exec(`CREATE TABLE IF NOT EXISTS currency_cash_moves(id INTEGER PRIMARY KEY, date TEXT NOT NULL, kind TEXT NOT NULL, currency TEXT NOT NULL, foreign_amount INTEGER NOT NULL, base_amount INTEGER NOT NULL, carrying INTEGER NOT NULL, rate TEXT NOT NULL, account_id TEXT NOT NULL REFERENCES accounts(id), partner_id TEXT REFERENCES partners(id), counterpart TEXT NOT NULL REFERENCES accounts(id), journal_id INTEGER REFERENCES journal_entries(id), description TEXT);
  CREATE TABLE IF NOT EXISTS exchange_rates(id INTEGER PRIMARY KEY, rate TEXT NOT NULL, approved_by TEXT NOT NULL, created_at TEXT NOT NULL);`);
  for(const [id,code,name,type,parent] of [['107','1070','الصندوق بالدولار','asset','1'],['108','1080','البنك بالدولار','asset','1'],['402','4020','أرباح فرق العملة','revenue','4'],['504','5040','خسائر فرق العملة','expense','5']])db.prepare('INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES(?,?,?,?,?)').run(id,code,name,type,parent);
+ for(const name of ['party_name','company_name','cashier_name','created_at'])column('currency_cash_moves',name,'TEXT');
  function positive(n,label,min=0){n=Number(n);if(!Number.isSafeInteger(n)||n<min)inputError(label+' غير صحيح');return n}
  function decimal(value,places,label){const text=String(value??'').trim();if(text.length>40||!new RegExp('^\\d+(?:\\.\\d{1,'+places+'})?$').test(text))inputError(label+' غير صحيح');const [whole,fraction='']=text.split('.');const n=BigInt(whole)*10n**BigInt(places)+BigInt(fraction.padEnd(places,'0'));if(n>BigInt(Number.MAX_SAFE_INTEGER))inputError(label+' كبير جداً');return Number(n)}
  function rate(){return db.prepare('SELECT rate FROM exchange_rates ORDER BY id DESC LIMIT 1').get()?.rate||null}
@@ -39,7 +40,7 @@ export function currencyERP({db,inputError,transaction,postJournal,erp,send,read
    const carrying=incoming?base:Number(BigInt(pool.base_value)*BigInt(amount)/BigInt(pool.foreign_cents)),difference=base-carrying,lines=incoming?[[account,base,0],[counterpart,0,base]]:[[counterpart,base,0],[account,0,carrying],['402',0,Math.max(0,difference)],['504',Math.max(0,-difference),0]];
    if(base<=0)inputError('المبلغ أقل من وحدة العملة الأساسية');
    const id=Number(db.prepare('INSERT INTO currency_cash_moves(date,kind,currency,foreign_amount,base_amount,carrying,rate,account_id,partner_id,counterpart,description) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(new Date().toISOString().slice(0,10),v.kind,'USD',amount,base,carrying,exchange,account,v.partner_id||null,counterpart,String(v.description||'')).lastInsertRowid),journal=postJournal('سند دولار '+id,'FX-'+id,lines);
-   db.prepare('UPDATE currency_cash_moves SET journal_id=? WHERE id=?').run(journal,id);erp.audit('currency-voucher',id,{base,carrying,difference});return {id,base_amount:base,carrying,exchange_difference:incoming?0:difference};
+   const details=voucherDetails(req,v);db.prepare('UPDATE currency_cash_moves SET journal_id=?,party_name=?,company_name=?,cashier_name=?,created_at=? WHERE id=?').run(journal,details.party_name,details.company_name,details.cashier_name,details.created_at,id);erp.audit('currency-voucher',id,{base,carrying,difference});return {id,base_amount:base,carrying,exchange_difference:incoming?0:difference};
   }),201);
   return false;
  }

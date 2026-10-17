@@ -355,7 +355,15 @@ function transaction(fn){if(db.isTransaction)return fn();db.exec('BEGIN IMMEDIAT
 }catch(e){db.exec('ROLLBACK');throw e}}
 const erp=extendERP({db,dbPath,send,inputError,readJSON,transaction,inventory,postJournal,postSale});
 const advanced=advancedERP({db,inputError,postJournal,inventory,erp});erp.setAdvanced(advanced);
-const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON});
+function voucherDetails(req,v){
+ const text=(value,max)=>{const s=String(value||'').trim();if(s.length>max)inputError('بيانات السند طويلة جداً');return s};
+ const party=v.partner_id?db.prepare('SELECT name FROM partners WHERE id=?').get(String(v.partner_id)):null;
+ const company=db.prepare("SELECT value FROM settings WHERE key='company_name'").get()?.value||'المحاسب برو';
+ return {party_name:party?.name||text(v.party_name,200),company_name:text(v.company_name||company,200),cashier_name:req.user.full_name||req.user.username,created_at:new Date().toISOString()};
+}
+for(const [name,type] of [['party_name','TEXT'],['company_name','TEXT'],['cashier_name','TEXT'],['created_at','TEXT'],['exchange_rate','TEXT']])if(!db.prepare('PRAGMA table_info(cash_vouchers)').all().some(c=>c.name===name))db.exec('ALTER TABLE cash_vouchers ADD COLUMN '+name+' '+type);
+
+const currency=currencyERP({db,inputError,transaction,postJournal,erp,send,readJSON,voucherDetails});
 const licensing=createLicensing({dbPath,send,readJSON});
 const access=createAccess({db,send,readJSON,inputError,audit:erp.audit,licensing});db.exec('PRAGMA user_version=6');
 const scanner=scannerERP({db,dbPath,send,readJSON,inputError,audit:erp.audit});
@@ -617,7 +625,8 @@ const handler=(req,res)=>{
  if(v.partner_id){const party=db.prepare('SELECT * FROM partners WHERE id=?').get(String(v.partner_id));if(!party)inputError('الطرف غير موجود');if(!['104','201'].includes(counterpart))inputError('تسديد الطرف يحتاج حساب الذمم');if(counterpart==='104'&&!['customer','both'].includes(party.type))inputError('اختر عميلاً');if(counterpart==='201'&&!['supplier','both'].includes(party.type))inputError('اختر مورداً');}
  const entry=postJournal(description,'V-'+crypto.randomUUID(),[[cash,incoming?amount:0,incoming?0:amount],[counterpart,incoming?0:amount,incoming?amount:0]]);
  const id=Number(db.prepare('INSERT INTO cash_vouchers(kind,cash_account,counterpart,amount,description,entry_id,date) VALUES(?,?,?,?,?,?,?)').run(v.kind,cash,counterpart,amount,description,entry,new Date().toISOString().slice(0,10)).lastInsertRowid);
- db.prepare('UPDATE cash_vouchers SET partner_id=? WHERE id=?').run(v.partner_id||null,id);erp.audit('voucher',id,{entry});
+ const details=voucherDetails(req,v),rate=db.prepare('SELECT rate FROM exchange_rates ORDER BY id DESC LIMIT 1').get()?.rate||null;
+ db.prepare('UPDATE cash_vouchers SET partner_id=?,party_name=?,company_name=?,cashier_name=?,created_at=?,exchange_rate=? WHERE id=?').run(v.partner_id||null,details.party_name,details.company_name,details.cashier_name,details.created_at,rate,id);erp.audit('voucher',id,{entry});
  return {id,entry_id:entry};
  });return send(res,201,result);
  }

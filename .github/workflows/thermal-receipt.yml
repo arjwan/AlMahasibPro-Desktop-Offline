@@ -2,7 +2,7 @@ name: Cashier interface checks
 on:
   push:
     branches: [development/scanner-local-reliability]
-    paths: ['index.html', 'tests/thermal-receipt*', 'tests/customer-selection*', 'stock-ui.js', 'tests/stock-balances*', 'stock.mjs', 'tests/stock-label*', '.github/workflows/thermal-receipt.yml']
+    paths: ['index.html', 'tests/thermal-receipt*', 'tests/customer-selection*', 'stock-ui.js', 'tests/stock-balances*', 'stock.mjs', 'tests/stock-label*', 'server.mjs', 'currency.mjs', 'erp-ui.js', 'advanced-ui.js', 'tests/voucher-details*', '.github/workflows/thermal-receipt.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,11 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: node --test tests/thermal-receipt.test.mjs tests/customer-selection.test.mjs tests/stock-balances-table.test.mjs tests/stock-label-designer.test.mjs
+      - run: node --test tests/thermal-receipt.test.mjs tests/customer-selection.test.mjs tests/stock-balances-table.test.mjs tests/stock-label-designer.test.mjs tests/voucher-details.test.mjs tests/payments.test.mjs tests/erp.test.mjs
       - run: npm install --no-save --package-lock=false playwright@1.56.0
       - run: npx playwright install --with-deps chromium
       - run: node tests/thermal-receipt.smoke.mjs
       - run: node tests/stock-label-designer.smoke.mjs
+      - run: node tests/voucher-details.smoke.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: Thermal-receipt-58mm-80mm
