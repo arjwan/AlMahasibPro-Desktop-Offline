@@ -205,7 +205,20 @@ if(!db.prepare("SELECT sql FROM sqlite_master WHERE name='payment_transactions'"
  }catch(e){db.exec('ROLLBACK');throw e}
 }
 db.prepare("INSERT OR IGNORE INTO accounts(id,code,name,type,parent_id) VALUES('pos-card-clearing','POS-CARD','Card clearing','asset','1')").run();
-migrateProviderSecrets(db,dbPath);
+// Upgrade legacy provider tables before reading encrypted credentials.
+ // CREATE TABLE IF NOT EXISTS does not add columns to installed databases.
+ const providerColumns=new Set(db.prepare('PRAGMA table_info(payment_providers)').all().map(row=>row.name));
+ const providerAdditions=[['api_key_encrypted','TEXT'],['webhook_secret_encrypted','TEXT'],['merchant_id','TEXT'],['settings','TEXT'],['active','INTEGER DEFAULT 1']];
+ const missingProviderColumns=providerAdditions.filter(([name])=>!providerColumns.has(name));
+ if(missingProviderColumns.length){
+   db.prepare('VACUUM INTO ?').run(dbPath+'.before-provider-schema-'+Date.now()+'.sqlite');
+   db.exec('BEGIN IMMEDIATE');
+   try{
+     for(const [name,definition] of missingProviderColumns)db.exec('ALTER TABLE payment_providers ADD COLUMN '+name+' '+definition);
+     db.exec('COMMIT');
+   }catch(error){db.exec('ROLLBACK');throw error}
+ }
+ migrateProviderSecrets(db,dbPath);
 function postJournal(description,reference,lines,accountingDate=null){
   erp.periodOpen(accountingDate||new Date().toISOString().slice(0,10));
   const valid=lines.filter(x=>x[1]||x[2]);
