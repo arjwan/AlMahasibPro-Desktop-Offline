@@ -1,0 +1,22 @@
+name: Cash voucher checks
+on:
+  push:
+    branches: [feature/cash-voucher-numbered]
+  pull_request:
+    paths:
+      - 'server.mjs'
+      - 'index.html'
+      - 'tests/cash-voucher.test.mjs'
+      - '.github/workflows/cash-vouchers.yml'
+jobs:
+  vouchers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node --check server.mjs
+      - run: node --test tests/cash-voucher.test.mjs
