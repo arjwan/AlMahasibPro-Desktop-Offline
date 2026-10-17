@@ -547,6 +547,9 @@ const handler=(req,res)=>{
  subtotal+=lineTotal;prepared.push({product,qty,lineTotal,price});
  }
  if(discount>subtotal)inputError('الخصم أكبر من المجموع');
+ if(discount*10>subtotal && req.user.role!=='admin' &&
+    !db.prepare("SELECT 1 FROM user_grants WHERE user_id=? AND module='discount_over_10'").get(req.user.id))
+    inputError('الخصم الذي يتجاوز 10% يحتاج صلاحية يمنحها المدير');
  const now=new Date().toISOString(),net=subtotal-discount;
  const paid=v.payments?0:v.paid===undefined?(v.payment==='آجل'?0:net):Number(v.paid);
  if(!Number.isSafeInteger(paid)||paid<0||paid>net)inputError('المبلغ المدفوع غير صحيح');
