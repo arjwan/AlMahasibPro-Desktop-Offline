@@ -62,7 +62,7 @@ export function scannerERP({db,dbPath,send,readJSON,inputError,audit}){
    fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'server.crt'),checked.cert,{mode:0o600});fs.writeFileSync(path.join(dir,'server.key'),checked.key,{mode:0o600});fs.writeFileSync(configPath,JSON.stringify({hostname:checked.hostname,port:checked.port}),{mode:0o600});audit('scanner-tls-config','local',{hostname:checked.hostname,port:checked.port});send(res,200,{ok:true,restart_required:true});return true;
   }
   if(get&&p==='/api/v1/market/scanner/pairs'){
-   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>({...pair,qr_url:pairingUrl(req,pair.token)})));return true;
+   send(res,200,db.prepare('SELECT token,last_seen FROM scanner_pairs WHERE owner=? AND active=1 ORDER BY rowid').all(owner(req)).map(pair=>{const code=db.prepare('SELECT code,expires FROM scanner_pair_codes WHERE token=? AND expires>?').get(pair.token,Date.now());return {...pair,short_code:code?.code||null,code_expires:code?.expires||null,qr_url:pairingUrl(req,pair.token)};}));return true;
   }
   if(post&&p==='/api/v1/market/scanner/pair'){
    // Pairing code can be prepared immediately; HTTPS is still required to use the phone camera and transmit scans.
