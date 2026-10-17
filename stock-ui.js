@@ -7,7 +7,7 @@ const kinds={in:'إدخال',out:'إخراج','return-in':'مرتجع إلى ا�
 const field=(id,label,type='text',value='')=>'<label>'+esc(label)+'<input class="input" id="stk-'+id+'" type="'+type+'" value="'+esc(value)+'"></label>';
 const select=(id,label,options)=>'<label>'+esc(label)+'<select class="input" id="stk-'+id+'">'+options+'</select></label>';
 const opts=(rows,label=x=>x.name)=>rows.map(x=>'<option value="'+esc(x.id)+'">'+esc(label(x))+'</option>').join('');
-const panel=(title,html)=>'<section class="panel"><h3>'+esc(title)+'</h3>'+html+'</section>';
+const panel=(title,html)=>'<details class="panel stk-section"><summary class="stk-section-title">'+esc(title)+'</summary><div class="stk-section-body">'+html+'</div></details>';
 const button=(id,label)=>'<button class="btn light" type="button" id="stk-'+id+'">'+label+'</button>';
 function printDoc(title,content){const w=window.open('','_blank');if(!w)throw Error('اسمح بفتح نافذة الطباعة');w.document.write('<!doctype html><html dir="rtl"><meta charset="utf-8"><title>'+esc(title)+'</title><style>body{font-family:Arial;padding:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px}@media print{button{display:none}}@page{size:A4}</style><h2>'+esc(title)+'</h2>'+content+'<button onclick="window.print()">طباعة</button></html>');w.document.close();return w}
 window.renderStockPage=async body=>{
@@ -28,6 +28,7 @@ const reload=()=>window.go('stock');
 function action(id,fn){$(id).onclick=async()=>{const b=$(id);b.disabled=true;try{await fn()}catch(err){notify(err.message)}finally{b.disabled=false}}}
 function form(id,fn){$(id+'-form').onsubmit=async ev=>{ev.preventDefault();const b=ev.target.querySelector('button');b.disabled=true;try{await fn();await reload()}catch(err){notify(err.message)}finally{b.disabled=false}}}
 function currentBalances(){const q=value('search').trim().toLocaleLowerCase();return products.filter(p=>[p.id,p.name,p.barcode,p.category,p.color,p.size,...p.barcodes.map(b=>b.code)].join(' ').toLocaleLowerCase().includes(q))}
+const sections=body.querySelectorAll('details.stk-section');sections[0]?.setAttribute('open','');
 function drawBalances(){
  const matching=currentBalances();
  $('balances').innerHTML='<div class="stk-balance-head"><span>المادة والرمز</span><span>الرصيد الكلي</span><span>التفاصيل</span></div>'+
