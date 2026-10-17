@@ -19,6 +19,8 @@ test('cash voucher persists party/words and prevents retry duplicates',async()=>
   assert.equal(saved.voucher_no,'V-'+saved.id);
   const retry=await fetch(server.base+'/api/cash/vouchers',{method:'POST',headers,body:JSON.stringify(payload)});
   assert.equal(retry.status,200);assert.equal((await retry.json()).id,saved.id);
+  const conflict=await fetch(server.base+'/api/cash/vouchers',{method:'POST',headers,body:JSON.stringify({...payload,amount:50000})});
+  assert.equal(conflict.status,400,'same request key must not be reused for a different voucher');
   const rows=await fetch(server.base+'/api/cash/vouchers',{headers}).then(r=>r.json());
   const matches=rows.filter(x=>x.id===saved.id);
   assert.equal(matches.length,1);
