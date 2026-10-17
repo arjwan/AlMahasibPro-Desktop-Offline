@@ -15,7 +15,7 @@ test('cash voucher persists party/words and prevents retry duplicates',async()=>
   const headers={'content-type':'application/json',cookie};
   const payload={kind:'receipt',cash_account:'101',counterpart:'104',amount:45600,party_name:'شركة الاختبار',amount_words:'خمسة وأربعون ألفاً وستمائة دينار عراقي',description:'تحصيل تجريبي',request_key:'voucher-test-20261017-001'};
   const first=await fetch(server.base+'/api/cash/vouchers',{method:'POST',headers,body:JSON.stringify(payload)});
-  assert.equal(first.status,201,await first.text().catch(()=>''));const saved=await first.json();
+  const saved=await first.json();assert.equal(first.status,201,JSON.stringify(saved));
   assert.equal(saved.voucher_no,'V-'+saved.id);
   const retry=await fetch(server.base+'/api/cash/vouchers',{method:'POST',headers,body:JSON.stringify(payload)});
   assert.equal(retry.status,200);assert.equal((await retry.json()).id,saved.id);
